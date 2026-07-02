@@ -1,0 +1,43 @@
+{
+    "name": "PaperColor (ESP-IDF + PlatformIO)",
+    "image": "espressif/idf:release-v5.5",
+
+    // Forward serial ports for flashing & monitoring
+    "runArgs": [
+        "--privileged",
+        "-v", "/dev:/dev"
+    ],
+
+    // Mount the project
+    "workspaceFolder": "/workspaces/PaperColor",
+    "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/PaperColor,type=bind",
+
+    // Install PlatformIO Core + configure shell
+    "postCreateCommand": "pip install --no-cache-dir platformio && pio --version",
+
+    // Extensions for ESP32 development
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-vscode.cpptools",
+                "platformio.platformio-ide",
+                "espressif.esp-idf-extension",
+                "ms-vscode.cmake-tools"
+            ],
+            "settings": {
+                "terminal.integrated.defaultProfile.linux": "bash",
+                "C_Cpp.intelliSenseEngine": "disabled",
+                "platformio-ide.useBuiltinPIOCore": false,
+                "platformio-ide.pioCoreBinary": "/usr/local/bin/pio"
+            }
+        }
+    },
+
+    // Serial monitor access
+    "mounts": [
+        "source=/dev/ttyUSB0,target=/dev/ttyUSB0,type=bind",
+        "source=/dev/ttyACM0,target=/dev/ttyACM0,type=bind"
+    ],
+
+    "remoteUser": "root"
+}

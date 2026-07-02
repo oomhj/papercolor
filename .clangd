@@ -1,0 +1,7 @@
+CompileFlags:
+  Add: [-I.pio/libdeps/m5stack-papercolor/M5Unified/src,
+        -I.pio/libdeps/m5stack-papercolor/M5GFX/src,
+        -I.pio/libdeps/m5stack-papercolor/M5PM1/src,
+        -I.pio/packages/framework-arduinoespressif32/cores/esp32,
+        -I.pio/packages/framework-arduinoespressif32/variants/esp32s3]
+  Remove: [-Wpedantic, -Werror]
