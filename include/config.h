@@ -52,9 +52,9 @@
 // ═══════════════════════════════════════════════════════════════
 // Buttons (active-low, internal pull-up)
 // ═══════════════════════════════════════════════════════════════
-#define PIN_BTN_A            10
-#define PIN_BTN_B            9
-#define PIN_BTN_C            1
+#define PIN_BTN_TOP          1     // BTN-TOP (physical top button)
+#define PIN_BTN_UP           9     // BTN-UP   (up / previous)
+#define PIN_BTN_DOWN         10    // BTN-DOWN (down / next)
 #define PIN_BTN_PWR          0     // ON/OFF/RESET/BOOT
 
 // ═══════════════════════════════════════════════════════════════

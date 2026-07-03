@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PaperColor Setup</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,sans-serif;background:#f5f5f5;padding:20px;max-width:480px;margin:auto}
+  h1{font-size:22px;color:#333;margin:20px 0;text-align:center}
+  .card{background:#fff;border-radius:12px;padding:20px;margin:16px 0;box-shadow:0 2px 8px rgba(0,0,0,0.08)}
+  label{display:block;font-size:14px;color:#666;margin:12px 0 4px}
+  input{width:100%;padding:12px;border:1px solid #ddd;border-radius:8px;font-size:16px}
+  .btn{width:100%;padding:14px;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer;margin-top:16px}
+  .btn-primary{background:#007aff;color:#fff}
+  .btn-primary:disabled{opacity:0.5}
+  .btn-secondary{background:#e8e8e8;color:#333;margin-top:8px}
+  #status{margin-top:12px;padding:8px;border-radius:6px;font-size:14px;text-align:center}
+  .ok{background:#d4edda;color:#155724}
+  .err{background:#f8d7da;color:#721c24}
+  .info{background:#d1ecf1;color:#0c5460}
+  #scanList{margin-top:8px}
+  .scan-item{padding:10px;border-bottom:1px solid #eee;cursor:pointer;display:flex;justify-content:space-between}
+  .scan-item:hover{background:#f0f0f0}
+  .sec{color:#999;font-size:12px}
+</style>
+</head>
+<body>
+<h1>PaperColor</h1>
+<div class="card">
+  <label>WiFi Name (SSID)</label>
+  <input id="ssid" placeholder="Select from list or type">
+  <label>Password</label>
+  <input id="pass" type="password" placeholder="Leave blank if open">
+  <button class="btn btn-secondary" onclick="scan()">Scan Networks</button>
+  <div id="scanList"></div>
+  <button class="btn btn-primary" onclick="connect()" id="connectBtn">Connect</button>
+  <div id="status"></div>
+</div>
+<div class="card" style="font-size:13px;color:#999">
+  Hotspot: <span id="apName"></span><br>
+  Only 2.4GHz supported
+</div>
+
+<script>
+async function scan() {
+  document.getElementById('scanList').innerHTML = '<div class="info" style="padding:8px">Scanning...</div>';
+  try {
+    const r = await fetch('/api/scan');
+    const nets = await r.json();
+    let html = '';
+    nets.forEach(n => {
+      const sec = n.secure ? '[LOCK]' : '[OPEN]';
+      html += `<div class="scan-item" onclick="pick('${n.ssid}')"><span>${n.ssid}</span><span class="sec">${sec} ${n.rssi}dBm</span></div>`;
+    });
+    document.getElementById('scanList').innerHTML = html;
+  } catch(e) {
+    document.getElementById('scanList').innerHTML = '<div class="err" style="padding:8px">Scan failed</div>';
+  }
+}
+function pick(s) { document.getElementById('ssid').value = s; }
+async function connect() {
+  const ssid = document.getElementById('ssid').value.trim();
+  if (!ssid) { show('Please enter SSID', 'err'); return; }
+  const pass = document.getElementById('pass').value;
+  document.getElementById('connectBtn').disabled = true;
+  show('Connecting...', 'info');
+  try {
+    const r = await fetch('/api/config', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ssid, pass})
+    });
+    const j = await r.json();
+    if (j.status === 'ok') {
+      show('Success! Device will restart...', 'ok');
+      setTimeout(() => location.reload(), 3000);
+    } else {
+      show(j.message || 'Failed', 'err');
+      document.getElementById('connectBtn').disabled = false;
+    }
+  } catch(e) {
+    show('Connection error', 'err');
+    document.getElementById('connectBtn').disabled = false;
+  }
+}
+function show(msg, cls) {
+  const s = document.getElementById('status');
+  s.className = cls; s.textContent = msg;
+}
+document.getElementById('apName').textContent = location.hostname;
+</script>
+</body>
+</html>

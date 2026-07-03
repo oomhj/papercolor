@@ -1,42 +1,24 @@
 /**
- * PaperColor — Hot News Reader
- *
- * P0: Fetches RSS headlines, displays on EPD with button navigation.
+ * PaperColor — Network Photo Album
  */
-
 #include "hal/hal.h"
-#include "apps/news/news_app.h"
+#include "apps/album/album_app.h"
 #include <esp_log.h>
 
 static const char* TAG = "PaperColor";
-
-static NewsApp s_news;
+static AlbumApp s_album;
 
 extern "C" void app_main(void)
 {
-    ESP_LOGI(TAG, "PaperColor News Reader P0");
-
+    ESP_LOGI(TAG, "PaperColor Album");
     pc_hal_init();
 
-    // Configure display for landscape
-    M5.Display.setEpdMode(epd_mode_t::epd_quality);
+    s_album.init();
+    s_album.start();
 
-    // ── Init & start news app ──
-    s_news.init();
-    s_news.start();
-
-    // ── Main loop ──
     while (1) {
         pc_hal_update();
-
-        s_news.update();
-
-        // BTN-C hold → deep sleep
-        if (M5.BtnC.wasHold()) {
-            ESP_LOGI(TAG, "Deep sleep");
-            pc_hal_deep_sleep();
-        }
-
+        s_album.update();
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 }

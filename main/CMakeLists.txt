@@ -2,12 +2,14 @@ idf_component_register(
     SRCS
         "main.cpp"
         "hal/hal.cpp"
-        "apps/news/news_app.cpp"
+        "wifi/wifi_manager.cpp"
+        "wifi/wifi_provisioning.cpp"
+        "apps/album/album_app.cpp"
         "apps/news/news_fetcher.cpp"
-        "apps/news/news_parser.cpp"
     INCLUDE_DIRS
         "."
         "../include"
+        "apps/news"
     REQUIRES
         M5Unified
         M5GFX
@@ -17,6 +19,8 @@ idf_component_register(
         esp_event
         esp_netif
         esp_http_client
+        esp_http_server
         esp-tls
         mbedtls
+        json
 )
