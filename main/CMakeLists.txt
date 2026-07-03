@@ -1,0 +1,22 @@
+idf_component_register(
+    SRCS
+        "main.cpp"
+        "hal/hal.cpp"
+        "apps/news/news_app.cpp"
+        "apps/news/news_fetcher.cpp"
+        "apps/news/news_parser.cpp"
+    INCLUDE_DIRS
+        "."
+        "../include"
+    REQUIRES
+        M5Unified
+        M5GFX
+        nvs_flash
+        driver
+        esp_wifi
+        esp_event
+        esp_netif
+        esp_http_client
+        esp-tls
+        mbedtls
+)

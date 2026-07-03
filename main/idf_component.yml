@@ -1,0 +1,4 @@
+## IDF Component Manager Manifest
+dependencies:
+  m5stack/m5pm1: ^1.0.6
+  idf: ">=5.0"
