@@ -417,19 +417,23 @@ void AlbumApp::render()
     if (_img_buf) {
         uint32_t t0 = esp_timer_get_time() / 1000;
 
-        // JPEG 1366x768 → EPD 400x600, use scale=1 (1/2) to balance quality & memory
+        // 16-bit sprite first (handles 4:4:4 JPEG, unlike 8-bit palette path)
         g_canvas->fillScreen(TFT_WHITE);
-        bool ok = g_canvas->drawJpg(_img_buf, _img_len, 0, 0, w, h, 0, 0, 1.0f);
+        bool ok = false;
+        {
+            M5Canvas tmp(g_canvas);
+            tmp.setColorDepth(16);
+            if (tmp.createSprite(w, h)) {
+                ok = tmp.drawJpg(_img_buf, _img_len, 0, 0, w, h, 0, 0, 1.0f);
+                if (ok) tmp.pushSprite(g_canvas, 0, 0);
+                tmp.deleteSprite();
+            }
+        }
 
         if (!ok) {
-            // Retry: copy to internal DRAM and decode there
-            ESP_LOGW(TAG, "drawJpg failed, retrying with DRAM buffer...");
-            void* dram = heap_caps_malloc(_img_len, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-            if (dram) {
-                memcpy(dram, _img_buf, _img_len);
-                ok = g_canvas->drawJpg((uint8_t*)dram, _img_len, 0, 0, w, h, 0, 0, 1.0f);
-                free(dram);
-            }
+            // Fallback: direct 8-bit canvas (4:2:0 JPEG)
+            ESP_LOGW(TAG, "16-bit sprite failed, trying 8-bit direct...");
+            ok = g_canvas->drawJpg(_img_buf, _img_len, 0, 0, w, h, 0, 0, 1.0f);
         }
 
         uint32_t t1 = esp_timer_get_time() / 1000;
