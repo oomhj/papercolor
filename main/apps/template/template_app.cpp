@@ -56,15 +56,15 @@ void TemplateApp::update()
 
 void TemplateApp::handle_buttons()
 {
-    if (M5.BtnA.wasPressed()) {
-        ESP_LOGI(TAG, "BTN-A pressed");
+    if (BTN_DOWN.wasPressed()) {
+        ESP_LOGI(TAG, "BTN_DOWN pressed");
         render();
     }
-    if (M5.BtnB.wasPressed()) {
-        ESP_LOGI(TAG, "BTN-B pressed");
+    if (BTN_UP.wasPressed()) {
+        ESP_LOGI(TAG, "BTN_UP pressed");
     }
-    if (M5.BtnC.wasPressed()) {
-        ESP_LOGI(TAG, "BTN-C pressed — deep sleep");
+    if (BTN_TOP.wasPressed()) {
+        ESP_LOGI(TAG, "BTN_TOP pressed — deep sleep");
         pc_hal_deep_sleep();
     }
 }

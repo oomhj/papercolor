@@ -325,15 +325,15 @@ void NewsApp::handle_buttons()
 
     bool changed = false;
 
-    if (M5.BtnA.wasClicked()) {
+    if (BTN_DOWN.wasClicked()) {
         if (_current_index > 0) { _current_index--; changed = true; }
     }
 
-    if (M5.BtnC.wasClicked()) {
+    if (BTN_TOP.wasClicked()) {
         if (_current_index < (int)_items.size() - 1) { _current_index++; changed = true; }
     }
 
-    if (M5.BtnB.wasClicked()) {
+    if (BTN_UP.wasClicked()) {
         ESP_LOGI(TAG, "Manual refresh");
         _needs_refresh = true;
     }

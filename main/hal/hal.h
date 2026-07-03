@@ -11,6 +11,8 @@
 #include <M5GFX.h>
 #include <M5PM1.h>
 
+#include "button.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
