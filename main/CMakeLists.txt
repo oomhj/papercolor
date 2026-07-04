@@ -3,6 +3,7 @@ idf_component_register(
         "main.cpp"
         "hal/hal.cpp"
         "hal/led_driver.cpp"
+        "hal/spi_bus.cpp"
         "hal/sd_card.cpp"
         "wifi/wifi_manager.cpp"
         "wifi/wifi_provisioning.cpp"

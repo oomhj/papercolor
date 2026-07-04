@@ -7,29 +7,26 @@
 
 #include "sd_card.h"
 #include "hal.h"
+#include "spi_bus.h"
 #include <cstring>
 #include <esp_log.h>
 #include <esp_vfs_fat.h>
 #include <sdmmc_cmd.h>
 #include <driver/sdspi_host.h>
-#include <driver/spi_common.h>
-#include <M5Unified.hpp>
 #include <M5PM1.h>
 
 static const char* TAG = "SDCard";
 
-// ── Pin definitions ──────────────────────────────────────────
-// Matches hardware doc: microSD shares SPI2_HOST with EPD
-#define SD_CS       GPIO_NUM_47
-#define SD_MOSI     GPIO_NUM_13
-#define SD_MISO     GPIO_NUM_14
-#define SD_CLK      GPIO_NUM_15
+// Pin SD_CS from shared SPI bus HAL. MOSI/MISO/CLK are on SPI_HOST.
+#define SD_CS       SPI_PIN_SD_CS
 
-// M5PM1 GPIO mapping
-//   PYG1 → CARD_DEC (card detect, input)
-//   PYG3 → PY_SD_PWR_EN (SD power, output)
-#define SD_PWR_PMU  M5PM1_GPIO_NUM_3
-#define SD_DET_PMU  M5PM1_GPIO_NUM_1
+// M5PM1 GPIO mapping (see docs/hardware/pin-mapping.md)
+//   PYG1 → CARD_DEC  (card detect, input, active low)
+//   PYG3 → PY_SD_PWR_EN  (SD power, output)
+//   PYG4 → PY_SD_DET_EN  (SD detect pull-up enable, must be HIGH)
+#define SD_PWR_PMU     M5PM1_GPIO_NUM_3
+#define SD_DET_PMU     M5PM1_GPIO_NUM_1
+#define SD_DET_EN_PMU  M5PM1_GPIO_NUM_4
 
 // ── State ────────────────────────────────────────────────────
 
@@ -60,10 +57,14 @@ static void sd_power(bool on)
 static bool sd_detect(void)
 {
     auto& pmu = get_pmu();
+    // Enable detect circuit: PYG4 = PY_SD_DET_EN
+    pmu.pinMode(SD_DET_EN_PMU, M5PM1_GPIO_MODE_OUTPUT);
+    pmu.digitalWrite(SD_DET_EN_PMU, HIGH);
+    vTaskDelay(pdMS_TO_TICKS(5));
+    // Read card detect: PYG1 = CARD_DEC, active-low
     pmu.pinMode(SD_DET_PMU, M5PM1_GPIO_MODE_INPUT);
-    // Card detect is active-low (LOW = card present)
     bool present = (pmu.digitalRead(SD_DET_PMU) == LOW);
-    ESP_LOGD(TAG, "card detect: %s", present ? "present" : "absent");
+    ESP_LOGI(TAG, "card detect: %s", present ? "present" : "absent");
     return present;
 }
 
@@ -82,32 +83,18 @@ bool sd_card_mount(void)
     sd_power(true);
     vTaskDelay(pdMS_TO_TICKS(50));
 
-    // Ensure SPI2_HOST bus is initialized (may already be from M5GFX)
-    spi_bus_config_t bus_cfg;
-    memset(&bus_cfg, 0, sizeof(bus_cfg));
-    bus_cfg.mosi_io_num     = SD_MOSI;
-    bus_cfg.miso_io_num     = SD_MISO;
-    bus_cfg.sclk_io_num     = SD_CLK;
-    bus_cfg.quadwp_io_num   = -1;
-    bus_cfg.quadhd_io_num   = -1;
-    bus_cfg.max_transfer_sz = 4092;
-    esp_err_t bus_e = spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
-    if (bus_e != ESP_OK && bus_e != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "spi_bus_init failed: %s", esp_err_to_name(bus_e));
-        sd_power(false);
-        return false;
-    }
-    if (bus_e == ESP_ERR_INVALID_STATE) {
-        ESP_LOGD(TAG, "SPI2_HOST already initialized (by M5GFX)");
-    }
+    // SD card uses SPI2_HOST which is shared with the EPD.
+    // The bus is already initialized by M5GFX (MOSI+CLK).
+    // sdspi internally configures MISO via GPIO matrix.
+    // We do NOT free/reinit the bus here — that would break the EPD.
 
     // Configure sdspi device
     sdspi_device_config_t dev_cfg = SDSPI_DEVICE_CONFIG_DEFAULT();
-    dev_cfg.host_id   = SPI2_HOST;
+    dev_cfg.host_id   = SPI_HOST;
     dev_cfg.gpio_cs   = SD_CS;
 
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-    host.slot = SPI2_HOST;
+    host.slot = SPI_HOST;
     host.max_freq_khz = 8000;  // 8MHz — conservative for shared bus
 
     esp_vfs_fat_sdmmc_mount_config_t mount_cfg = {
@@ -146,7 +133,7 @@ void sd_card_unmount(void)
     s_card = NULL;
     s_mounted = false;
 
-    // Power off
+    // Power off (SPI bus remains for EPD — M5GFX owns it)
     sd_power(false);
     ESP_LOGI(TAG, "unmounted");
 }

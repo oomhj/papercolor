@@ -12,6 +12,7 @@
 #include <M5PM1.h>
 
 #include "button.h"
+#include "spi_bus.h"
 
 #ifdef __cplusplus
 extern "C" {
