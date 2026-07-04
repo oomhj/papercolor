@@ -8,6 +8,7 @@
 #include "hal/hal.h"
 #include "hal/led_driver.h"
 #include "wifi_manager.h"
+#include "filter.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -368,6 +369,9 @@ static bool http_fetch_image(const char* url,
 
 bool AlbumApp::init() {
     _img_buf = nullptr; _img_len = 0;
+    _decoded_buf = nullptr; _decoded_sw = _decoded_sh = 0;
+    _decoded_crop_x = _decoded_out_y = 0;
+    _filter_idx = 0;  // default: None
     wifi_mgr_init();
     led_init(); led_async_start();
     return true;
@@ -377,6 +381,7 @@ void AlbumApp::deinit()
 {
     _running = false;
     if (_img_buf) { free(_img_buf); _img_buf = nullptr; _img_len = 0; }
+    if (_decoded_buf) { free(_decoded_buf); _decoded_buf = nullptr; }
 }
 
 void AlbumApp::start() { _running = true; _needs_refresh = true; }
@@ -389,6 +394,8 @@ void AlbumApp::update()
 
     if (_needs_refresh) {
         _needs_refresh = false;
+        _needs_rerender = false;
+        if (_decoded_buf) { free(_decoded_buf); _decoded_buf = nullptr; }
         ESP_LOGI(TAG, "--- Refresh triggered ---");
 
         bool ok = false;
@@ -418,6 +425,10 @@ void AlbumApp::update()
         } else {
             led_async_flash(255, 0, 0, 3);       // red 3× (replaces blue/orange)
         }
+    } else if (_needs_rerender && _decoded_buf) {
+        _needs_rerender = false;
+        ESP_LOGI(TAG, "--- Filter switch ---");
+        render();
     }
     handle_buttons();
 }
@@ -427,18 +438,18 @@ void AlbumApp::render()
     const int w = g_canvas->width();
     const int h = g_canvas->height();
 
-    if (_img_buf) {
+    if (_img_buf || _decoded_buf) {
         uint32_t t0 = esp_timer_get_time() / 1000;
 
         g_canvas->fillScreen(TFT_WHITE);
         bool ok = false;
 
-        // Decode with esp_new_jpeg; render to 16-bit sprite → EPD directly (skip canvas palette)
-        {
+        // Step 1: decode JPEG → RGB565_BE if not cached
+        if (_img_buf && !_decoded_buf) {
             jpeg_dec_handle_t jdec = NULL;
             jpeg_dec_config_t cfg = DEFAULT_JPEG_DEC_CONFIG();
             cfg.output_type = JPEG_PIXEL_FORMAT_RGB565_BE;
-            // Step 1: parse header to get source dimensions
+
             jpeg_dec_header_info_t hdr = {};
             {
                 jpeg_dec_io_t io = {}; io.inbuf = _img_buf; io.inbuf_len = (int)_img_len;
@@ -447,18 +458,16 @@ void AlbumApp::render()
                     ok_header = (jpeg_dec_parse_header(jdec, &io, &hdr) == JPEG_ERR_OK);
                     jpeg_dec_close(jdec); jdec = NULL;
                 }
-                if (!ok_header) goto skip_esp_new_jpeg;
+                if (!ok_header) { ok = false; goto render_done; }
             }
-            // Step 2: calculate proportional scale (fix height=400)
-            int sh = 400;  // target height
-            int sw = (hdr.width * sh + hdr.height / 2) / hdr.height;  // prop width
-            sw = ((sw + 4) / 8) * 8;  // round up to multiple of 8
+
+            int sh = 400;
+            int sw = (hdr.width * sh + hdr.height / 2) / hdr.height;
+            sw = ((sw + 4) / 8) * 8;
             if (sw < w) sw = w;
-            int crop_x = (sw > w) ? (sw - w) / 2 : 0;  // center crop width
-            int out_y  = (h - sh) / 2;                  // center vertically
-            ESP_LOGI(TAG, "JPEG: %dx%d → scale %dx%d, crop_x=%d, out_y=%d",
-                     hdr.width, hdr.height, sw, sh, crop_x, out_y);
-            // Step 3: decode with scale
+            int crop_x = (sw > w) ? (sw - w) / 2 : 0;
+            int out_y  = (h - sh) / 2;
+
             cfg.scale.width = sw;
             cfg.scale.height = sh;
             if (jpeg_dec_open(&cfg, &jdec) == JPEG_ERR_OK) {
@@ -469,60 +478,58 @@ void AlbumApp::render()
                 if (out_len > 0) {
                     uint8_t* out = (uint8_t*)jpeg_calloc_align(out_len, 16);
                     if (out) {
-                        io.outbuf = out;
-                        io.out_size = out_len;
+                        io.outbuf = out; io.out_size = out_len;
                         if (jpeg_dec_process(jdec, &io) == JPEG_ERR_OK) {
+                            _decoded_buf = out;
+                            _decoded_sw = sw;
+                            _decoded_sh = sh;
+                            _decoded_crop_x = crop_x;
+                            _decoded_out_y = out_y;
                             ok = true;
-                            // Floyd-Steinberg dither: RGB565 → 8-bit palette indices
-                            uint8_t* dithered = (uint8_t*)malloc(w * h);
-                            int err_size = (w + 2) * sizeof(int);
-                            int* err_r = (int*)calloc(err_size * 2, 1);
-                            int* err_g = (int*)calloc(err_size * 2, 1);
-                            int* err_b = (int*)calloc(err_size * 2, 1);
-                            if (dithered && err_r && err_g && err_b) {
-                                int stride = w + 2;
-                                for (int y = 0; y < sh && y + out_y < h; y++) {
-                                    int cur = y & 1;
-                                    int nxt = (y + 1) & 1;
-                                    const uint16_t* row = (const uint16_t*)out + y * sw + crop_x;
-                                    for (int x = 0; x < w; x++) {
-
-                                        int cur_off = cur * stride, nxt_off = nxt * stride;
-                                        // BE→LE swap then extract R5G6B5
-                                        uint16_t px = __builtin_bswap16(row[x]);
-                                        int r5 = (px >> 11) & 0x1F, g6 = (px >> 5) & 0x3F, b5 = px & 0x1F;
-                                        r5 += err_r[cur_off + x + 1]; g6 += err_g[cur_off + x + 1]; b5 += err_b[cur_off + x + 1];
-                                        if (r5 < 0) r5 = 0; else if (r5 > 31) r5 = 31;
-                                        if (g6 < 0) g6 = 0; else if (g6 > 63) g6 = 63;
-                                        if (b5 < 0) b5 = 0; else if (b5 > 31) b5 = 31;
-                                        int r3 = r5 >> 2, g3 = g6 >> 3, b2 = b5 >> 3;
-                                        int er = r5 - (r3 << 2), eg = g6 - (g3 << 3), eb = b5 - (b2 << 3);
-                                        dithered[y * w + x] = (r3 << 5) | (g3 << 2) | b2;
-                                        err_r[cur_off + x + 2] += er * 7 / 16; err_r[nxt_off + x] += er * 3 / 16;
-                                        err_r[nxt_off + x + 1] += er * 5 / 16; err_r[nxt_off + x + 2] += er * 1 / 16;
-                                        err_g[cur_off + x + 2] += eg * 7 / 16; err_g[nxt_off + x] += eg * 3 / 16;
-                                        err_g[nxt_off + x + 1] += eg * 5 / 16; err_g[nxt_off + x + 2] += eg * 1 / 16;
-                                        err_b[cur_off + x + 2] += eb * 7 / 16; err_b[nxt_off + x] += eb * 3 / 16;
-                                        err_b[nxt_off + x + 1] += eb * 5 / 16; err_b[nxt_off + x + 2] += eb * 1 / 16;
-                                    }
-                                    memset(err_r + nxt * stride, 0, stride * sizeof(int));
-                                    memset(err_g + nxt * stride, 0, stride * sizeof(int));
-                                    memset(err_b + nxt * stride, 0, stride * sizeof(int));
-                                }
-                                g_canvas->pushImage(0, out_y, w, h, dithered);
-                            }
-                            free(dithered); free(err_r); free(err_g); free(err_b);
+                        } else {
+                            jpeg_free_align(out);
                         }
-                        jpeg_free_align(out);
                     }
                 }
                 jpeg_dec_close(jdec);
             }
+            if (_img_buf) { free(_img_buf); _img_buf = nullptr; _img_len = 0; }
+        } else if (_decoded_buf) {
+            ok = true;
         }
-        skip_esp_new_jpeg:
-        if (!ok) {
-            // Fallback: M5GFX drawJpg via 16-bit sprite
-            ESP_LOGW(TAG, "esp_new_jpeg failed, trying M5GFX drawJpg...");
+
+render_done:
+        // Step 2: apply filter → push to canvas
+        if (ok && _decoded_buf) {
+            const filter_t* f = &FILTERS[_filter_idx];
+            if (f->fn) {
+                uint8_t* dithered = (uint8_t*)malloc(w * h);
+                if (dithered) {
+                    int sw = _decoded_sw;
+                    const uint16_t* src = (const uint16_t*)_decoded_buf
+                                          + _decoded_out_y * sw + _decoded_crop_x;
+                    uint16_t* crop = (uint16_t*)malloc(w * h * 2);
+                    if (crop) {
+                        for (int y = 0; y < h; y++)
+                            memcpy(crop + y * w, src + y * sw, w * 2);
+                        f->fn(crop, dithered, w, h);
+                        g_canvas->pushImage(0, 0, w, h, dithered);
+                        free(crop);
+                    }
+                    free(dithered);
+                }
+            } else {
+                int sw = _decoded_sw;
+                const uint16_t* src = (const uint16_t*)_decoded_buf
+                                      + _decoded_out_y * sw + _decoded_crop_x;
+                for (int y = 0; y < h; y++)
+                    g_canvas->pushImage(0, y, w, 1, src + y * sw);
+            }
+        }
+
+        // Fallback
+        if (!ok && _img_buf) {
+            ESP_LOGW(TAG, "trying M5GFX drawJpg fallback...");
             M5Canvas tmp(g_canvas);
             tmp.setColorDepth(16);
             if (tmp.createSprite(w, h)) {
@@ -533,15 +540,16 @@ void AlbumApp::render()
         }
 
         uint32_t t1 = esp_timer_get_time() / 1000;
-        ESP_LOGI(TAG, "decode: %s (%dms, %zu bytes -> %dx%d)",
+        ESP_LOGI(TAG, "filter[%s]: %s (%dms)",
+                 FILTERS[_filter_idx].name,
                  ok ? "OK" : "FAIL",
-                 (int)(t1 - t0), _img_len, w, h);
+                 (int)(t1 - t0));
         if (!ok) {
             g_canvas->setTextColor(TFT_RED);
             g_canvas->setFont(&fonts::Font4);
             g_canvas->drawString("Decode Failed", (w - 140) / 2, h / 2 - 14);
-            ESP_LOGE(TAG, "all JPEG decode attempts failed");
-}
+            ESP_LOGE(TAG, "all decode attempts failed");
+        }
     } else {
         g_canvas->fillScreen(TFT_BLACK);
         g_canvas->setTextColor(TFT_WHITE);

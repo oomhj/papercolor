@@ -7,6 +7,7 @@ idf_component_register(
         "wifi/wifi_provisioning.cpp"
         "apps/album/album_app.cpp"
         "apps/news/news_fetcher.cpp"
+        "apps/album/filter.cpp"
     INCLUDE_DIRS
         "."
         "../include"
