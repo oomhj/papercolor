@@ -493,7 +493,8 @@ void AlbumApp::render()
                                     for (int x = 0; x < w; x++) {
 
                                         int cur_off = cur * stride, nxt_off = nxt * stride;
-                                        uint16_t px = row[x];
+                                        // BE→LE swap then extract R5G6B5
+                                        uint16_t px = __builtin_bswap16(row[x]);
                                         int r5 = (px >> 11) & 0x1F, g6 = (px >> 5) & 0x3F, b5 = px & 0x1F;
                                         r5 += err_r[cur_off + x + 1]; g6 += err_g[cur_off + x + 1]; b5 += err_b[cur_off + x + 1];
                                         if (r5 < 0) r5 = 0; else if (r5 > 31) r5 = 31;
