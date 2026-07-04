@@ -6,6 +6,7 @@
  */
 #include "album_app.h"
 #include "hal/hal.h"
+#include "hal/led_driver.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -364,7 +365,7 @@ static bool http_fetch_image(const char* url,
 
 // ── Lifecycle ────────────────────────────────────────────────
 
-bool AlbumApp::init() { _img_buf = nullptr; _img_len = 0; return true; }
+bool AlbumApp::init() { _img_buf = nullptr; _img_len = 0; led_init(); led_async_start(); return true; }
 
 void AlbumApp::deinit()
 {
@@ -384,18 +385,16 @@ void AlbumApp::update()
         _needs_refresh = false;
         ESP_LOGI(TAG, "--- Refresh triggered ---");
 
-        // LED blue: connecting
-        M5.Led.setBrightness(60);
-        M5.Led.setAllColor(0, 0, 255);
-        M5.Led.display();
-
         bool ok = false;
+
+        led_async_breath(255, 165, 0, 800);      // orange breath: WiFi
         uint32_t t_wifi = esp_timer_get_time() / 1000;
 
         if (wifi_connect()) {
             uint32_t t_fetch = esp_timer_get_time() / 1000;
             ESP_LOGI(TAG, "WiFi OK (%dms), starting HTTP fetch", (int)(t_fetch - t_wifi));
 
+            led_async_breath(0, 0, 255, 800);    // blue breath: HTTP
             if (_img_buf) { free(_img_buf); _img_buf = nullptr; _img_len = 0; }
             ok = http_fetch_image(IMAGE_URL, &_img_buf, &_img_len);
 
@@ -407,22 +406,14 @@ void AlbumApp::update()
             ESP_LOGE(TAG, "WiFi FAILED — skipping HTTP fetch");
         }
 
-        // LED feedback
-        if (ok) {
-            M5.Led.setAllColor(0, 255, 0);  // green = success
-            M5.Led.display();
-            ESP_LOGI(TAG, "LED: green (success)");
-            vTaskDelay(pdMS_TO_TICKS(400));
-        } else {
-            M5.Led.setAllColor(255, 0, 0);  // red = failed
-            M5.Led.display();
-            ESP_LOGI(TAG, "LED: red (failed)");
-            vTaskDelay(pdMS_TO_TICKS(1500));
-        }
-        M5.Led.setBrightness(0);
-        M5.Led.display();
+        led_async_off();
 
-        render();
+        if (ok) {
+            render();
+            led_async_flash(0, 255, 0, 3);       // green flash 3×
+        } else {
+            led_async_flash(255, 0, 0, 3);       // red flash 3×
+        }
     }
     handle_buttons();
 }

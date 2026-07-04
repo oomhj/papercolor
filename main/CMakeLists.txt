@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "main.cpp"
         "hal/hal.cpp"
+        "hal/led_driver.cpp"
         "wifi/wifi_manager.cpp"
         "wifi/wifi_provisioning.cpp"
         "apps/album/album_app.cpp"
