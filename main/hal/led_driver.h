@@ -40,21 +40,32 @@ void led_set_brightness(uint8_t brightness);
 void led_flush(void);
 void led_off(void);
 void led_breath(uint8_t r, uint8_t g, uint8_t b, int duration_ms);
+void led_breath_forever(uint8_t r, uint8_t g, uint8_t b);
 void led_flash(uint8_t r, uint8_t g, uint8_t b, int count);
+void led_flash_forever(uint8_t r, uint8_t g, uint8_t b);
 
 // ── Asynchronous API (non-blocking, requires led_async_start()) ──
 
-/** @brief Set color immediately (async). Overrides any ongoing effect. */
+/** @brief Set color immediately. Overrides any ongoing effect. */
 void led_async_color(uint8_t r, uint8_t g, uint8_t b);
 
-/** @brief Breath once (async). Queued, returns immediately. */
+/** @brief Breath once. Queued, returns immediately. */
 void led_async_breath(uint8_t r, uint8_t g, uint8_t b, int duration_ms);
 
-/** @brief Flash N times (async). Queued, returns immediately. */
+/** @brief Breath continuously until led_async_stop(). */
+void led_async_breath_forever(uint8_t r, uint8_t g, uint8_t b);
+
+/** @brief Flash N times. Queued, returns immediately. */
 void led_async_flash(uint8_t r, uint8_t g, uint8_t b, int count);
 
-/** @brief Turn off (async). Cancels any queued effect. */
+/** @brief Flash continuously until led_async_stop(). */
+void led_async_flash_forever(uint8_t r, uint8_t g, uint8_t b);
+
+/** @brief Turn off immediately. Clears queue, stops ongoing effects. */
 void led_async_off(void);
+
+/** @brief Stop all effects and turn off. Alias for led_async_off(). */
+void led_async_stop(void);
 
 #ifdef __cplusplus
 }

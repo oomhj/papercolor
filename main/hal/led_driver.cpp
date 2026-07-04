@@ -5,6 +5,7 @@
  *
  * Async mode: dedicated FreeRTOS task reads from a queue and
  * executes LED effects without blocking the caller.
+ * "Forever" effects loop until a new command arrives.
  */
 
 #include "led_driver.h"
@@ -23,7 +24,9 @@ static uint8_t s_brightness = 60;
 enum led_async_cmd {
     LED_CMD_COLOR,
     LED_CMD_BREATH,
+    LED_CMD_BREATH_FOREVER,
     LED_CMD_FLASH,
+    LED_CMD_FLASH_FOREVER,
     LED_CMD_OFF,
 };
 
@@ -37,6 +40,12 @@ static QueueHandle_t s_led_queue = NULL;
 static TaskHandle_t  s_led_task  = NULL;
 static const int     s_queue_len = 4;
 
+/** Check if a new command is pending (non-blocking). */
+static bool has_pending(void)
+{
+    return (s_led_queue && uxQueueMessagesWaiting(s_led_queue) > 0);
+}
+
 static void led_task_func(void* arg)
 {
     led_async_msg_t msg;
@@ -49,8 +58,16 @@ static void led_task_func(void* arg)
                 case LED_CMD_BREATH:
                     led_breath(msg.r, msg.g, msg.b, msg.param);
                     break;
+                case LED_CMD_BREATH_FOREVER:
+                    while (!has_pending())
+                        led_breath(msg.r, msg.g, msg.b, 800);
+                    break;
                 case LED_CMD_FLASH:
                     led_flash(msg.r, msg.g, msg.b, msg.param);
+                    break;
+                case LED_CMD_FLASH_FOREVER:
+                    while (!has_pending())
+                        led_flash(msg.r, msg.g, msg.b, 1);
                     break;
                 case LED_CMD_OFF:
                     led_off();
@@ -62,7 +79,7 @@ static void led_task_func(void* arg)
 
 void led_async_start(void)
 {
-    if (s_led_task) return;  // already started
+    if (s_led_task) return;
     s_led_queue = xQueueCreate(s_queue_len, sizeof(led_async_msg_t));
     if (s_led_queue) {
         xTaskCreatePinnedToCore(led_task_func, "led_task", 2048,
@@ -77,7 +94,6 @@ static void send_msg(uint8_t cmd, uint8_t r, uint8_t g, uint8_t b, int param)
     if (!s_led_queue) return;
     led_async_msg_t msg = { cmd, r, g, b, param };
 
-    // If queue is full, discard oldest to keep responsiveness
     if (xQueueSend(s_led_queue, &msg, 0) != pdTRUE) {
         led_async_msg_t discard;
         xQueueReceive(s_led_queue, &discard, 0);
@@ -124,6 +140,8 @@ void led_off(void)
     s_brightness = save;
 }
 
+// ── Effect functions ───────────────────────────────────────────
+
 void led_breath(uint8_t r, uint8_t g, uint8_t b, int duration_ms)
 {
     const int steps = 16;
@@ -136,6 +154,11 @@ void led_breath(uint8_t r, uint8_t g, uint8_t b, int duration_ms)
         M5.Led.display();
         vTaskDelay(pdMS_TO_TICKS(half_ms / steps));
     }
+}
+
+void led_breath_forever(uint8_t r, uint8_t g, uint8_t b)
+{
+    while (!has_pending()) led_breath(r, g, b, 800);
 }
 
 void led_flash(uint8_t r, uint8_t g, uint8_t b, int count)
@@ -151,6 +174,12 @@ void led_flash(uint8_t r, uint8_t g, uint8_t b, int count)
     }
 }
 
+void led_flash_forever(uint8_t r, uint8_t g, uint8_t b)
+{
+    while (!has_pending()) led_flash(r, g, b, 1);
+    led_off();
+}
+
 // ── Async API ──────────────────────────────────────────────────
 
 void led_async_color(uint8_t r, uint8_t g, uint8_t b)
@@ -163,12 +192,27 @@ void led_async_breath(uint8_t r, uint8_t g, uint8_t b, int duration_ms)
     send_msg(LED_CMD_BREATH, r, g, b, duration_ms);
 }
 
+void led_async_breath_forever(uint8_t r, uint8_t g, uint8_t b)
+{
+    send_msg(LED_CMD_BREATH_FOREVER, r, g, b, 0);
+}
+
 void led_async_flash(uint8_t r, uint8_t g, uint8_t b, int count)
 {
     send_msg(LED_CMD_FLASH, r, g, b, count);
 }
 
+void led_async_flash_forever(uint8_t r, uint8_t g, uint8_t b)
+{
+    send_msg(LED_CMD_FLASH_FOREVER, r, g, b, 0);
+}
+
 void led_async_off(void)
 {
     send_msg(LED_CMD_OFF, 0, 0, 0, 0);
+}
+
+void led_async_stop(void)
+{
+    led_async_off();
 }
