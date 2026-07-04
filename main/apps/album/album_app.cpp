@@ -440,18 +440,17 @@ void AlbumApp::render()
                             io.out_size = out_len;
                             if (jpeg_dec_process(jdec, &io) == JPEG_ERR_OK) {
                                 ok = true;
-                                // Push decoded RGB565 directly to EPD (skip canvas palette)
+                                // Push to 8-bit sprite (canvas parent, auto color conversion)
                                 int cw = (w < hdr.width) ? w : hdr.width;
                                 int ch = (h < hdr.height) ? h : hdr.height;
-                                M5Canvas tmp(&M5.Display);
-                                tmp.setColorDepth(16);
+                                M5Canvas tmp(g_canvas);
+                                tmp.setColorDepth(8);
                                 if (tmp.createSprite(w, h)) {
                                     const uint16_t* src = (const uint16_t*)out;
                                     for (int sy = 0; sy < ch; sy++) {
                                         tmp.pushImage(0, sy, cw, 1, src + sy * hdr.width);
                                     }
-                                    tmp.pushSprite(0, 0);
-                                    M5.Display.display();
+                                    tmp.pushSprite(g_canvas, 0, 0);
                                     tmp.deleteSprite();
                                 }
                             }
@@ -462,12 +461,6 @@ void AlbumApp::render()
                 jpeg_dec_close(jdec);
             }
         }
-        if (ok) {
-            uint32_t t1 = esp_timer_get_time() / 1000;
-            ESP_LOGI(TAG, "decode: OK (%dms, %zu bytes)", (int)(t1 - t0), _img_len);
-            return;  // skip canvas push + display (already done via display sprite)
-        }
-
         if (!ok) {
             // Fallback: M5GFX drawJpg via 16-bit sprite
             ESP_LOGW(TAG, "esp_new_jpeg failed, trying M5GFX drawJpg...");
