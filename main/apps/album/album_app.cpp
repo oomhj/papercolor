@@ -25,7 +25,7 @@
 static const char* TAG = "Album";
 
 // ── Image API ─────────────────────────────────────────────────
-static const char* IMAGE_URL = "https://api.dujin.org/bing/1366.php";
+static const char* IMAGE_URL = "https://bing.img.run/rand_1366x768.php";
 
 // ── WiFi ──────────────────────────────────────────────────────
 #ifndef ALBUM_SSID
@@ -130,14 +130,22 @@ static bool wifi_connect()
                      ap.rssi < -80 ? "weak" : ap.rssi < -67 ? "ok" : "strong",
                      ap.bandwidth);
 
-            // Set DNS to 114.114.114.114 (override DHCP)
+            // Wait for IP + DNS from DHCP
             esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
             if (netif) {
-                esp_netif_dns_info_t dns = {};
-                dns.ip.u_addr.ip4.addr = esp_ip4addr_aton("114.114.114.114");
-                dns.ip.type = ESP_IPADDR_TYPE_V4;
-                esp_err_t dns_e = esp_netif_set_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns);
-                ESP_LOGI(TAG, "  DNS set: %s", dns_e == ESP_OK ? "114.114.114.114" : "FAILED");
+                for (int i = 0; i < 50; i++) {  // up to 10s
+                    esp_netif_ip_info_t ip;
+                    if (esp_netif_get_ip_info(netif, &ip) == ESP_OK && ip.ip.addr != 0) {
+                        ESP_LOGI(TAG, "  IP: " IPSTR, IP2STR(&ip.ip));
+                        break;
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(200));
+                }
+                vTaskDelay(pdMS_TO_TICKS(500));  // settle DNS
+                esp_netif_dns_info_t dns{};
+                if (esp_netif_get_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns) == ESP_OK) {
+                    ESP_LOGI(TAG, "  DNS: " IPSTR, IP2STR(&dns.ip.u_addr.ip4));
+                }
             }
             return true;
         }
@@ -264,13 +272,19 @@ static bool http_fetch_image(const char* url,
     esp_http_client_set_header(c, "Cache-Control", "no-cache");
     ESP_LOGI(TAG, "Headers: UA + Cache-Control set");
 
-    // ── Perform (connect + send + receive headers) ──
-    uint32_t t0 = esp_timer_get_time() / 1000;
-    esp_err_t err = esp_http_client_perform(c);
-    uint32_t t1 = esp_timer_get_time() / 1000;
-    int elapsed_ms = t1 - t0;
-
-    if (err != ESP_OK) {
+    // ── Perform (connect + send + receive headers) with retry ──
+    esp_err_t err;
+    int elapsed_ms = 0;
+    for (int retry = 0; retry < 2; retry++) {
+        if (retry) {
+            ESP_LOGW(TAG, "  Retry %d...", retry);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+        uint32_t t0 = esp_timer_get_time() / 1000;
+        err = esp_http_client_perform(c);
+        uint32_t t1 = esp_timer_get_time() / 1000;
+        int elapsed_ms = t1 - t0;
+        if (err == ESP_OK) break;
         ESP_LOGE(TAG, "HTTP perform FAILED after %dms", elapsed_ms);
         ESP_LOGE(TAG, "  Error: %s (0x%x)", esp_err_to_name(err), err);
         if (err == ESP_ERR_HTTP_CONNECT) {
@@ -286,6 +300,8 @@ static bool http_fetch_image(const char* url,
         } else if (err == ESP_ERR_HTTP_EAGAIN) {
             ESP_LOGE(TAG, "  → Resource temporarily unavailable");
         }
+    }
+    if (err != ESP_OK) {
         esp_http_client_cleanup(c);
         return false;
     }
@@ -325,19 +341,17 @@ static bool http_fetch_image(const char* url,
         return false;
     }
 
-    // Quick JPEG / PNG header validation
-    if (acc.len >= 2 && acc.buf[0] == 0xFF && acc.buf[1] == 0xD8) {
-        ESP_LOGI(TAG, "  JPEG header: OK (FF D8)");
-    } else if (acc.len >= 8 && acc.buf[0] == 0x89 && acc.buf[1] == 'P' && acc.buf[2] == 'N' && acc.buf[3] == 'G') {
-        ESP_LOGI(TAG, "  PNG header: OK (89 50 4E 47)");
-    } else if (acc.len > 0) {
-        ESP_LOGW(TAG, "  Unknown format: first %d bytes %02X %02X %02X %02X %02X %02X %02X %02X",
-                 (int)acc.len > 8 ? 8 : (int)acc.len,
-                 acc.len > 0 ? acc.buf[0] : 0, acc.len > 1 ? acc.buf[1] : 0,
-                 acc.len > 2 ? acc.buf[2] : 0, acc.len > 3 ? acc.buf[3] : 0,
-                 acc.len > 4 ? acc.buf[4] : 0, acc.len > 5 ? acc.buf[5] : 0,
-                 acc.len > 6 ? acc.buf[6] : 0, acc.len > 7 ? acc.buf[7] : 0);
+    // Scan past redirect body to find JPEG/PNG data
+    size_t skip = 0;
+    for (size_t i = 0; i + 1 < acc.len; i++) {
+        if (acc.buf[i] == 0xFF && acc.buf[i+1] == 0xD8) { skip = i; break; }
     }
+    if (skip > 0) {
+        ESP_LOGW(TAG, "  Skipped %zu bytes of redirect body before JPEG", skip);
+        acc.len -= skip;
+        memmove(acc.buf, acc.buf + skip, acc.len);
+    }
+    ESP_LOGI(TAG, "  JPEG header: OK (FF D8) — %zu bytes", acc.len);
 
     esp_http_client_cleanup(c);
     *out_buf = acc.buf;
@@ -426,41 +440,53 @@ void AlbumApp::render()
             jpeg_dec_handle_t jdec = NULL;
             jpeg_dec_config_t cfg = DEFAULT_JPEG_DEC_CONFIG();
             cfg.output_type = JPEG_PIXEL_FORMAT_RGB565_BE;
+            // Step 1: parse header to get source dimensions
+            jpeg_dec_header_info_t hdr = {};
+            {
+                jpeg_dec_io_t io = {}; io.inbuf = _img_buf; io.inbuf_len = (int)_img_len;
+                bool ok_header = false;
+                if (jpeg_dec_open(&cfg, &jdec) == JPEG_ERR_OK) {
+                    ok_header = (jpeg_dec_parse_header(jdec, &io, &hdr) == JPEG_ERR_OK);
+                    jpeg_dec_close(jdec); jdec = NULL;
+                }
+                if (!ok_header) goto skip_esp_new_jpeg;
+            }
+            // Step 2: calculate proportional scale (fix height=400)
+            int sh = 400;  // target height
+            int sw = (hdr.width * sh + hdr.height / 2) / hdr.height;  // prop width
+            sw = ((sw + 4) / 8) * 8;  // round up to multiple of 8
+            if (sw < w) sw = w;
+            int crop_x = (sw > w) ? (sw - w) / 2 : 0;  // center crop width
+            int out_y  = (h - sh) / 2;                  // center vertically
+            ESP_LOGI(TAG, "JPEG: %dx%d → scale %dx%d, crop_x=%d, out_y=%d",
+                     hdr.width, hdr.height, sw, sh, crop_x, out_y);
+            // Step 3: decode with scale
+            cfg.scale.width = sw;
+            cfg.scale.height = sh;
             if (jpeg_dec_open(&cfg, &jdec) == JPEG_ERR_OK) {
-                jpeg_dec_io_t io = { .inbuf = _img_buf, .inbuf_len = (int)_img_len };
-                jpeg_dec_header_info_t hdr;
-                if (jpeg_dec_parse_header(jdec, &io, &hdr) == JPEG_ERR_OK) {
-                    int out_len = 0;
-                    jpeg_dec_get_outbuf_len(jdec, &out_len);
-                    ESP_LOGI(TAG, "JPEG: %dx%d, outbuf=%d", hdr.width, hdr.height, out_len);
-                    if (out_len > 0) {
-                        uint8_t* out = (uint8_t*)jpeg_calloc_align(out_len, 16);
-                        if (out) {
-                            io.outbuf = out;
-                            io.out_size = out_len;
-                            if (jpeg_dec_process(jdec, &io) == JPEG_ERR_OK) {
-                                ok = true;
-                                // Push to 8-bit sprite (canvas parent, auto color conversion)
-                                int cw = (w < hdr.width) ? w : hdr.width;
-                                int ch = (h < hdr.height) ? h : hdr.height;
-                                M5Canvas tmp(g_canvas);
-                                tmp.setColorDepth(8);
-                                if (tmp.createSprite(w, h)) {
-                                    const uint16_t* src = (const uint16_t*)out;
-                                    for (int sy = 0; sy < ch; sy++) {
-                                        tmp.pushImage(0, sy, cw, 1, src + sy * hdr.width);
-                                    }
-                                    tmp.pushSprite(g_canvas, 0, 0);
-                                    tmp.deleteSprite();
-                                }
+                jpeg_dec_io_t io = {}; io.inbuf = _img_buf; io.inbuf_len = (int)_img_len;
+                jpeg_dec_parse_header(jdec, &io, &hdr);
+                int out_len = 0;
+                jpeg_dec_get_outbuf_len(jdec, &out_len);
+                if (out_len > 0) {
+                    uint8_t* out = (uint8_t*)jpeg_calloc_align(out_len, 16);
+                    if (out) {
+                        io.outbuf = out;
+                        io.out_size = out_len;
+                        if (jpeg_dec_process(jdec, &io) == JPEG_ERR_OK) {
+                            ok = true;
+                            for (int sy = 0; sy < sh && sy + out_y < h; sy++) {
+                                g_canvas->pushImage(0, sy + out_y, w, 1,
+                                    (const uint16_t*)out + sy * sw + crop_x);
                             }
-                            jpeg_free_align(out);
                         }
+                        jpeg_free_align(out);
                     }
                 }
                 jpeg_dec_close(jdec);
             }
         }
+        skip_esp_new_jpeg:
         if (!ok) {
             // Fallback: M5GFX drawJpg via 16-bit sprite
             ESP_LOGW(TAG, "esp_new_jpeg failed, trying M5GFX drawJpg...");
@@ -477,13 +503,12 @@ void AlbumApp::render()
         ESP_LOGI(TAG, "decode: %s (%dms, %zu bytes -> %dx%d)",
                  ok ? "OK" : "FAIL",
                  (int)(t1 - t0), _img_len, w, h);
-
         if (!ok) {
             g_canvas->setTextColor(TFT_RED);
             g_canvas->setFont(&fonts::Font4);
             g_canvas->drawString("Decode Failed", (w - 140) / 2, h / 2 - 14);
             ESP_LOGE(TAG, "all JPEG decode attempts failed");
-        }
+}
     } else {
         g_canvas->fillScreen(TFT_BLACK);
         g_canvas->setTextColor(TFT_WHITE);
