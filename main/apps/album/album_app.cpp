@@ -7,6 +7,7 @@
 #include "album_app.h"
 #include "hal/hal.h"
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <esp_log.h>
 #include <esp_timer.h>
@@ -141,11 +142,13 @@ static bool wifi_connect()
                     }
                     vTaskDelay(pdMS_TO_TICKS(200));
                 }
-                vTaskDelay(pdMS_TO_TICKS(500));  // settle DNS
+                vTaskDelay(pdMS_TO_TICKS(500));  // settle
+                // Set DNS
                 esp_netif_dns_info_t dns{};
-                if (esp_netif_get_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns) == ESP_OK) {
-                    ESP_LOGI(TAG, "  DNS: " IPSTR, IP2STR(&dns.ip.u_addr.ip4));
-                }
+                dns.ip.u_addr.ip4.addr = esp_ip4addr_aton("114.114.114.114");
+                dns.ip.type = ESP_IPADDR_TYPE_V4;
+                esp_netif_set_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns);
+                ESP_LOGI(TAG, "  DNS: 114.114.114.114");
             }
             return true;
         }
@@ -477,36 +480,42 @@ void AlbumApp::render()
                             ok = true;
                             // Floyd-Steinberg dither: RGB565 → 8-bit palette indices
                             uint8_t* dithered = (uint8_t*)malloc(w * h);
-                            if (dithered) {
-                                int err_r[2][1024], err_g[2][1024], err_b[2][1024];
+                            int err_size = (w + 2) * sizeof(int);
+                            int* err_r = (int*)calloc(err_size * 2, 1);
+                            int* err_g = (int*)calloc(err_size * 2, 1);
+                            int* err_b = (int*)calloc(err_size * 2, 1);
+                            if (dithered && err_r && err_g && err_b) {
+                                int stride = w + 2;
                                 for (int y = 0; y < sh && y + out_y < h; y++) {
                                     int cur = y & 1;
                                     int nxt = (y + 1) & 1;
                                     const uint16_t* row = (const uint16_t*)out + y * sw + crop_x;
                                     for (int x = 0; x < w; x++) {
+
+                                        int cur_off = cur * stride, nxt_off = nxt * stride;
                                         uint16_t px = row[x];
                                         int r5 = (px >> 11) & 0x1F, g6 = (px >> 5) & 0x3F, b5 = px & 0x1F;
-                                        r5 += err_r[cur][x+1]; g6 += err_g[cur][x+1]; b5 += err_b[cur][x+1];
+                                        r5 += err_r[cur_off + x + 1]; g6 += err_g[cur_off + x + 1]; b5 += err_b[cur_off + x + 1];
                                         if (r5 < 0) r5 = 0; else if (r5 > 31) r5 = 31;
                                         if (g6 < 0) g6 = 0; else if (g6 > 63) g6 = 63;
                                         if (b5 < 0) b5 = 0; else if (b5 > 31) b5 = 31;
                                         int r3 = r5 >> 2, g3 = g6 >> 3, b2 = b5 >> 3;
                                         int er = r5 - (r3 << 2), eg = g6 - (g3 << 3), eb = b5 - (b2 << 3);
                                         dithered[y * w + x] = (r3 << 5) | (g3 << 2) | b2;
-                                        err_r[cur][x+2] += er * 7 / 16; err_r[nxt][x] += er * 3 / 16;
-                                        err_r[nxt][x+1] += er * 5 / 16; err_r[nxt][x+2] += er * 1 / 16;
-                                        err_g[cur][x+2] += eg * 7 / 16; err_g[nxt][x] += eg * 3 / 16;
-                                        err_g[nxt][x+1] += eg * 5 / 16; err_g[nxt][x+2] += eg * 1 / 16;
-                                        err_b[cur][x+2] += eb * 7 / 16; err_b[nxt][x] += eb * 3 / 16;
-                                        err_b[nxt][x+1] += eb * 5 / 16; err_b[nxt][x+2] += eb * 1 / 16;
+                                        err_r[cur_off + x + 2] += er * 7 / 16; err_r[nxt_off + x] += er * 3 / 16;
+                                        err_r[nxt_off + x + 1] += er * 5 / 16; err_r[nxt_off + x + 2] += er * 1 / 16;
+                                        err_g[cur_off + x + 2] += eg * 7 / 16; err_g[nxt_off + x] += eg * 3 / 16;
+                                        err_g[nxt_off + x + 1] += eg * 5 / 16; err_g[nxt_off + x + 2] += eg * 1 / 16;
+                                        err_b[cur_off + x + 2] += eb * 7 / 16; err_b[nxt_off + x] += eb * 3 / 16;
+                                        err_b[nxt_off + x + 1] += eb * 5 / 16; err_b[nxt_off + x + 2] += eb * 1 / 16;
                                     }
-                                    memset(err_r[nxt], 0, (w + 2) * sizeof(int));
-                                    memset(err_g[nxt], 0, (w + 2) * sizeof(int));
-                                    memset(err_b[nxt], 0, (w + 2) * sizeof(int));
+                                    memset(err_r + nxt * stride, 0, stride * sizeof(int));
+                                    memset(err_g + nxt * stride, 0, stride * sizeof(int));
+                                    memset(err_b + nxt * stride, 0, stride * sizeof(int));
                                 }
                                 g_canvas->pushImage(0, out_y, w, h, dithered);
-                                free(dithered);
                             }
+                            free(dithered); free(err_r); free(err_g); free(err_b);
                         }
                         jpeg_free_align(out);
                     }
