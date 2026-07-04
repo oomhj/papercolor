@@ -108,10 +108,12 @@ bool sd_card_mount(void)
     esp_err_t e = esp_vfs_fat_sdspi_mount("/sd", &host, &dev_cfg, &mount_cfg, &s_card);
     if (e != ESP_OK) {
         ESP_LOGE(TAG, "mount failed: %s", esp_err_to_name(e));
+        spi_bus_release();
         sd_power(false);
         return false;
     }
 
+    spi_bus_release();
     s_mounted = true;
     ESP_LOGI(TAG, "mounted, size=%lluMB, speed=%uMHz",
              (unsigned long long)(s_card->csd.capacity * s_card->csd.sector_size) / (1024 * 1024),
@@ -128,13 +130,16 @@ void sd_card_unmount(void)
 {
     if (!s_mounted) return;
 
+    spi_bus_claim_sd();
+
     // Flush and unmount
     esp_vfs_fat_sdcard_unmount("/sd", s_card);
     s_card = NULL;
     s_mounted = false;
 
-    // Power off (SPI bus remains for EPD — M5GFX owns it)
+    // Power off
     sd_power(false);
+    spi_bus_release();
     ESP_LOGI(TAG, "unmounted");
 }
 

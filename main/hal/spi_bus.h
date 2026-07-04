@@ -1,25 +1,27 @@
 /**
  * PaperColor — Shared SPI Bus HAL
  *
- * SPI2_HOST is shared between EPD (M5GFX) and microSD (sdspi).
- * This module manages ownership so they don't conflict.
+ * Manages SPI2_HOST shared between EPD (M5GFX) and microSD (sdspi).
+ * Responsibilities:
+ *   - Bus initialization with all 3 pins (including MISO)
+ *   - CS isolation — ensure only one device is active at a time
+ *   - Clock source stability
  *
- * Pin mapping (from docs/hardware/pin-mapping.md):
- *   CLK  = G15  (shared)
- *   MOSI = G13  (shared)
- *   MISO = G14  (SD only — EPD is write-only)
- *   EPD_CS  = G44
- *   SD_CS   = G47
+ * Pin mapping (docs/hardware/pin-mapping.md):
+ *   CLK    = G15   (shared)
+ *   MOSI   = G13   (shared)
+ *   MISO   = G14   (SD only – EPD is write-only, but bus needs it)
+ *   EPD_CS = G44
+ *   SD_CS  = G47
  *
  * Lifecycle:
- *   spi_bus_init()     — called once from pc_hal_init() BEFORE M5.begin()
- *                         Pre-initializes the bus with all 3 pins (MOSI/MISO/CLK).
- *                         M5GFX will find the bus already exists and skip its own init.
- *   spi_bus_lock()     — claim bus for exclusive access (EPD or SD)
- *   spi_bus_unlock()   — release
+ *   spi_bus_init()       — once from pc_hal_init(), BEFORE M5.begin()
+ *   spi_bus_claim_epd()  — before EPD transaction
+ *   spi_bus_release()    — after EPD or SD transaction
+ *   spi_bus_claim_sd()   — before SD transaction
  *
- * Note: The EPD and SD card must NOT be accessed simultaneously.
- *       spi_bus_lock/unlock is a cooperative mechanism — both sides must use it.
+ * The claim/release pattern ensures all CS lines are properly
+ * de-asserted during handover, preventing cross-device interference.
  */
 
 #pragma once
@@ -27,41 +29,47 @@
 #include <cstdint>
 #include <cstddef>
 #include <driver/gpio.h>
-#include <driver/spi_common.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/** @brief GPIO pin numbers for the shared SPI bus */
-#define SPI_PIN_MOSI  GPIO_NUM_13
-#define SPI_PIN_MISO  GPIO_NUM_14
-#define SPI_PIN_CLK   GPIO_NUM_15
+// ── Pin definitions ──────────────────────────────────────────
+
+#define SPI_PIN_MOSI   GPIO_NUM_13
+#define SPI_PIN_MISO   GPIO_NUM_14
+#define SPI_PIN_CLK    GPIO_NUM_15
 #define SPI_PIN_EPD_CS GPIO_NUM_44
 #define SPI_PIN_SD_CS  GPIO_NUM_47
 
-/** @brief SPI host used by both EPD and SD card */
-#define SPI_HOST SPI2_HOST
+#define SPI_HOST       SPI2_HOST
+
+// ── API ──────────────────────────────────────────────────────
 
 /**
  * @brief  Initialize the shared SPI bus.
- *         Must be called BEFORE M5.begin() so M5GFX reuses the bus.
- * @return true on success.
+ *         Must be called BEFORE M5.begin() so M5GFX reuses it.
+ *         Sets up MOSI/MISO/CLK on SPI2_HOST.
  */
 bool spi_bus_init(void);
 
 /**
- * @brief  Claim exclusive access to the SPI bus.
- *         Blocks until the bus becomes available.
- * @note   Currently a no-op (both EPD and SD are used sequentially).
- *         Reserved for future concurrency management.
+ * @brief  Claim bus for EPD access.
+ *         Forces SD_CS HIGH, then EPD can assert its own CS.
  */
-void spi_bus_lock(void);
+void spi_bus_claim_epd(void);
 
 /**
- * @brief  Release exclusive access to the SPI bus.
+ * @brief  Claim bus for SD card access.
+ *         Forces EPD_CS HIGH, then SD csdspi can assert SD_CS.
  */
-void spi_bus_unlock(void);
+void spi_bus_claim_sd(void);
+
+/**
+ * @brief  Release bus after any transaction.
+ *         De-asserts all CS lines to idle-high state.
+ */
+void spi_bus_release(void);
 
 #ifdef __cplusplus
 }
