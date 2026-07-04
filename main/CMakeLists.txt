@@ -3,6 +3,7 @@ idf_component_register(
         "main.cpp"
         "hal/hal.cpp"
         "hal/led_driver.cpp"
+        "hal/sd_card.cpp"
         "wifi/wifi_manager.cpp"
         "wifi/wifi_provisioning.cpp"
         "apps/album/album_app.cpp"
@@ -27,4 +28,7 @@ idf_component_register(
         esp-tls
         mbedtls
         json
+        fatfs
+        sdmmc
+        esp_driver_sdspi
 )
