@@ -475,9 +475,37 @@ void AlbumApp::render()
                         io.out_size = out_len;
                         if (jpeg_dec_process(jdec, &io) == JPEG_ERR_OK) {
                             ok = true;
-                            for (int sy = 0; sy < sh && sy + out_y < h; sy++) {
-                                g_canvas->pushImage(0, sy + out_y, w, 1,
-                                    (const uint16_t*)out + sy * sw + crop_x);
+                            // Floyd-Steinberg dither: RGB565 → 8-bit palette indices
+                            uint8_t* dithered = (uint8_t*)malloc(w * h);
+                            if (dithered) {
+                                int err_r[2][1024], err_g[2][1024], err_b[2][1024];
+                                for (int y = 0; y < sh && y + out_y < h; y++) {
+                                    int cur = y & 1;
+                                    int nxt = (y + 1) & 1;
+                                    const uint16_t* row = (const uint16_t*)out + y * sw + crop_x;
+                                    for (int x = 0; x < w; x++) {
+                                        uint16_t px = row[x];
+                                        int r5 = (px >> 11) & 0x1F, g6 = (px >> 5) & 0x3F, b5 = px & 0x1F;
+                                        r5 += err_r[cur][x+1]; g6 += err_g[cur][x+1]; b5 += err_b[cur][x+1];
+                                        if (r5 < 0) r5 = 0; else if (r5 > 31) r5 = 31;
+                                        if (g6 < 0) g6 = 0; else if (g6 > 63) g6 = 63;
+                                        if (b5 < 0) b5 = 0; else if (b5 > 31) b5 = 31;
+                                        int r3 = r5 >> 2, g3 = g6 >> 3, b2 = b5 >> 3;
+                                        int er = r5 - (r3 << 2), eg = g6 - (g3 << 3), eb = b5 - (b2 << 3);
+                                        dithered[y * w + x] = (r3 << 5) | (g3 << 2) | b2;
+                                        err_r[cur][x+2] += er * 7 / 16; err_r[nxt][x] += er * 3 / 16;
+                                        err_r[nxt][x+1] += er * 5 / 16; err_r[nxt][x+2] += er * 1 / 16;
+                                        err_g[cur][x+2] += eg * 7 / 16; err_g[nxt][x] += eg * 3 / 16;
+                                        err_g[nxt][x+1] += eg * 5 / 16; err_g[nxt][x+2] += eg * 1 / 16;
+                                        err_b[cur][x+2] += eb * 7 / 16; err_b[nxt][x] += eb * 3 / 16;
+                                        err_b[nxt][x+1] += eb * 5 / 16; err_b[nxt][x+2] += eb * 1 / 16;
+                                    }
+                                    memset(err_r[nxt], 0, (w + 2) * sizeof(int));
+                                    memset(err_g[nxt], 0, (w + 2) * sizeof(int));
+                                    memset(err_b[nxt], 0, (w + 2) * sizeof(int));
+                                }
+                                g_canvas->pushImage(0, out_y, w, h, dithered);
+                                free(dithered);
                             }
                         }
                         jpeg_free_align(out);
