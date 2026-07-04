@@ -17,6 +17,7 @@
 #include <esp_timer.h>
 #include <esp_rom_sys.h>
 #include <driver/gpio.h>
+#include <esp_sleep.h>
 
 static const char* TAG = "HAL";
 
@@ -178,7 +179,13 @@ void pc_hal_deep_sleep(void)
     ESP_LOGI(TAG, "Entering deep sleep");
     M5.Display.sleep();
     vTaskDelay(pdMS_TO_TICKS(100));
-    M5.Power.deepSleep();
+
+    // Clear all stale wakeup sources, then set GPIO wakeup
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+    esp_sleep_enable_ext1_wakeup((1ULL << 0) | (1ULL << 1) | (1ULL << 9) | (1ULL << 10),
+                                  ESP_EXT1_WAKEUP_ANY_LOW);
+
+    esp_deep_sleep_start();
 }
 
 // ── SHT40 Sensor ─────────────────────────────────────────────

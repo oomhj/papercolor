@@ -7,6 +7,7 @@
 #include "album_app.h"
 #include "hal/hal.h"
 #include "hal/led_driver.h"
+#include "wifi_manager.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -365,7 +366,12 @@ static bool http_fetch_image(const char* url,
 
 // ── Lifecycle ────────────────────────────────────────────────
 
-bool AlbumApp::init() { _img_buf = nullptr; _img_len = 0; led_init(); led_async_start(); return true; }
+bool AlbumApp::init() {
+    _img_buf = nullptr; _img_len = 0;
+    wifi_mgr_init();
+    led_init(); led_async_start();
+    return true;
+}
 
 void AlbumApp::deinit()
 {
@@ -387,14 +393,14 @@ void AlbumApp::update()
 
         bool ok = false;
 
-        led_async_breath(255, 165, 0, 800);      // orange breath: WiFi
+        led_async_breath_forever(255, 165, 0);   // orange → WiFi
         uint32_t t_wifi = esp_timer_get_time() / 1000;
 
         if (wifi_connect()) {
             uint32_t t_fetch = esp_timer_get_time() / 1000;
             ESP_LOGI(TAG, "WiFi OK (%dms), starting HTTP fetch", (int)(t_fetch - t_wifi));
 
-            led_async_breath(0, 0, 255, 800);    // blue breath: HTTP
+            led_async_breath_forever(0, 0, 255); // blue → HTTP (replaces orange)
             if (_img_buf) { free(_img_buf); _img_buf = nullptr; _img_len = 0; }
             ok = http_fetch_image(IMAGE_URL, &_img_buf, &_img_len);
 
@@ -406,13 +412,11 @@ void AlbumApp::update()
             ESP_LOGE(TAG, "WiFi FAILED — skipping HTTP fetch");
         }
 
-        led_async_off();
-
         if (ok) {
+            led_async_flash(0, 255, 0, 3);       // green 3×: image ready, start render
             render();
-            led_async_flash(0, 255, 0, 3);       // green flash 3×
         } else {
-            led_async_flash(255, 0, 0, 3);       // red flash 3×
+            led_async_flash(255, 0, 0, 3);       // red 3× (replaces blue/orange)
         }
     }
     handle_buttons();
@@ -558,8 +562,8 @@ void AlbumApp::handle_buttons()
         ESP_LOGI(TAG, "BTN_TOP: refresh");
         _needs_refresh = true;
     }
-    if (BTN_TOP.wasHold()) {             // Long press → deep sleep
-        ESP_LOGI(TAG, "BTN_TOP hold: sleep");
-        pc_hal_deep_sleep();
+    if (BTN_TOP.wasHold()) {             // Long press → provisioning
+        ESP_LOGI(TAG, "BTN_TOP hold: provisioning");
+        wifi_mgr_trigger_provisioning();
     }
 }

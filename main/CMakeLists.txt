@@ -11,6 +11,7 @@ idf_component_register(
         "."
         "../include"
         "apps/news"
+        "wifi"
     REQUIRES
         M5Unified
         M5GFX

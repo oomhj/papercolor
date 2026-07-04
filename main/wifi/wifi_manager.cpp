@@ -6,7 +6,9 @@
  */
 
 #include "wifi_manager.h"
+#include "wifi_provisioning.h"
 #include "hal/button.h"
+#include "hal/led_driver.h"
 #include <cstdio>
 #include <cstring>
 #include <esp_log.h>
@@ -30,77 +32,7 @@ static char            s_ip_str[16]     = "0.0.0.0";
 static char            s_ap_ssid[32]    = "";
 static bool            s_nvs_inited     = false;
 static bool            s_netif_inited   = false;
-static TaskHandle_t    s_breathing_task = NULL;
-
-// ── LED helper ───────────────────────────────────────────────
-
-static void led_do(uint8_t r, uint8_t g, uint8_t b, uint8_t brightness = 60)
-{
-    M5.Led.setBrightness(brightness);
-    M5.Led.setAllColor(r, g, b);
-    M5.Led.display();
-}
-static void led_off() { M5.Led.setBrightness(0); M5.Led.display(); }
-
-// ── LED breathing effect ─────────────────────────────────────
-// Smoothly fades the LED between min_b and max_b brightness.
-// Stops when *stop_flag becomes true or duration_ms elapses.
-static void led_breathe(uint8_t r, uint8_t g, uint8_t b,
-                         uint8_t min_b, uint8_t max_b,
-                         uint32_t duration_ms,
-                         volatile bool* stop_flag)
-{
-    uint32_t start = esp_timer_get_time() / 1000;
-    uint32_t cycle = 2000;  // 2s per breath
-    while (1) {
-        if (stop_flag && *stop_flag) break;
-        uint32_t elapsed = (esp_timer_get_time() / 1000) - start;
-        if (duration_ms && elapsed >= duration_ms) break;
-        uint32_t t = elapsed % cycle;
-        int brt = (t < cycle/2)
-            ? min_b + (max_b - min_b) * (int)t / (int)(cycle/2)
-            : max_b - (max_b - min_b) * ((int)t - (int)(cycle/2)) / (int)(cycle/2);
-        if (brt < 0) brt = 0;
-        if (brt > 255) brt = 255;
-        M5.Led.setBrightness(brt);
-        M5.Led.setAllColor(r, g, b);
-        M5.Led.display();
-        vTaskDelay(pdMS_TO_TICKS(30));
-    }
-}
-
-// ── AP fast breathing task (500ms cycle, bright blue) ────────
-// Runs while in WIFI_STATE_AP_IDLE to indicate provisioning mode.
-// Self-exits when state changes away from AP_IDLE.
-static void ap_breathing_task(void* arg)
-{
-    (void)arg;
-    const uint32_t half = 250;  // 250ms up, 250ms down = 500ms per breath
-    const uint32_t step = 30;
-
-    while (s_state == WIFI_STATE_AP_IDLE) {
-        // Fade up
-        for (uint32_t t = 0; t < half && s_state == WIFI_STATE_AP_IDLE; t += step) {
-            int brt = 10 + 70 * (int)t / (int)half;
-            M5.Led.setBrightness(brt);
-            M5.Led.setAllColor(0, 0, 255);
-            M5.Led.display();
-            vTaskDelay(pdMS_TO_TICKS(step));
-        }
-        // Fade down
-        for (uint32_t t = 0; t < half && s_state == WIFI_STATE_AP_IDLE; t += step) {
-            int brt = 80 - 70 * (int)t / (int)half;
-            M5.Led.setBrightness(brt);
-            M5.Led.setAllColor(0, 0, 255);
-            M5.Led.display();
-            vTaskDelay(pdMS_TO_TICKS(step));
-        }
-    }
-
-    led_off();
-    s_breathing_task = NULL;
-    vTaskDelete(NULL);
-}
+// ── LED managed via led_driver async API ─────────────────────
 
 // ── State management ─────────────────────────────────────────
 
@@ -117,13 +49,20 @@ static void set_state(wifi_state_t new_state)
 void wifi_mgr_update_led(void)
 {
     switch (s_state) {
-        case WIFI_STATE_STA_CN:   led_do(0, 0, 255, 40); break;  // blue dim
-        case WIFI_STATE_STA_OK:   led_do(0, 255, 0);     break;  // green
-        case WIFI_STATE_STA_FAIL: led_do(255, 0, 0);     break;  // red
-        case WIFI_STATE_STA_LOST: led_do(255, 100, 0);   break;  // orange (lost)
-        case WIFI_STATE_AP_IDLE:  led_do(0, 0, 255, 80); break;  // blue bright
-        case WIFI_STATE_AP_CFG:   led_do(0, 100, 255);   break;  // cyan
-        default:                  led_off();              break;
+        case WIFI_STATE_STA_CN:
+            led_async_breath_forever(0, 0, 255);        break;  // blue breathing
+        case WIFI_STATE_STA_OK:
+            led_async_color(0, 255, 0);                 break;  // green
+        case WIFI_STATE_STA_FAIL:
+            led_async_flash(255, 0, 0, 3);              break;  // red flash 3×
+        case WIFI_STATE_STA_LOST:
+            led_async_flash(255, 100, 0, 10);           break;  // orange flash
+        case WIFI_STATE_AP_IDLE:
+            led_async_flash_forever(255, 255, 0);       break;  // yellow flash
+        case WIFI_STATE_AP_CFG:
+            led_async_color(0, 100, 255);               break;  // cyan
+        default:
+            led_async_stop();                           break;
     }
 }
 
@@ -179,6 +118,9 @@ void wifi_mgr_init(void)
         esp_event_loop_create_default() != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "event loop failed");
     }
+
+    // Create AP netif (with built-in DHCP server for clients)
+    esp_netif_create_default_wifi_ap();
 
     // Register handlers
     esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL, NULL);
@@ -253,20 +195,18 @@ void wifi_mgr_disconnect_sta(void)
 
 void wifi_mgr_start_ap(void)
 {
-    esp_wifi_set_mode(WIFI_MODE_AP);
+    esp_wifi_stop();                                         // stop first (may be in STA/NULL mode)
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_set_mode(WIFI_MODE_AP));
     wifi_config_t ap = {};
     strcpy((char*)ap.ap.ssid, s_ap_ssid);
     ap.ap.max_connection = 4;
     ap.ap.channel        = 6;
-    esp_wifi_set_config(WIFI_IF_AP, &ap);
-    esp_wifi_start();
+    ap.ap.ssid_len       = (uint8_t)strlen(s_ap_ssid);
+    ap.ap.authmode       = WIFI_AUTH_OPEN;
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_set_config(WIFI_IF_AP, &ap));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_start());
     set_state(WIFI_STATE_AP_IDLE);
     ESP_LOGI(TAG, "AP started: %s", s_ap_ssid);
-
-    // Start fast blue breathing to indicate provisioning mode
-    if (!s_breathing_task && s_state == WIFI_STATE_AP_IDLE) {
-        xTaskCreate(ap_breathing_task, "ap_breath", 2048, NULL, 3, &s_breathing_task);
-    }
 }
 
 void wifi_mgr_stop_ap(void)
@@ -362,14 +302,13 @@ static void retry_task_func(void* param)
         ESP_LOGI(TAG, "Retry %d/%d", attempt + 1, max_attempts);
         set_state(WIFI_STATE_STA_CN);
 
-        // Breathing LED while waiting before retry
-        uint8_t b_max = (attempt == 0) ? 120 : (attempt == 1) ? 80 : 50;
-        uint8_t b_min = (attempt == 0) ? 10  : (attempt == 1) ? 5  : 3;
+        led_async_breath_forever(0, 0, 255);  // blue breath while waiting
         uint32_t wait_end = esp_timer_get_time() / 1000 +
                            ((attempt > 0) ? delays[attempt - 1] : 0);
         while (esp_timer_get_time() / 1000 < wait_end && !s_retry_abort) {
-            led_breathe(0, 0, 255, b_min, b_max, 500, &s_retry_abort);
+            vTaskDelay(pdMS_TO_TICKS(100));
         }
+        led_async_stop();
         if (s_retry_abort) break;
 
         // Try each saved slot
@@ -392,25 +331,15 @@ static void retry_task_func(void* param)
             uint32_t deadline = esp_timer_get_time() / 1000 + timeouts[attempt];
             while (esp_timer_get_time() / 1000 < deadline && !s_retry_abort) {
                 if (s_state == WIFI_STATE_STA_OK) { ok = true; break; }
-                led_breathe(0, 0, 255, b_min, b_max, 300, &s_retry_abort);
+                vTaskDelay(pdMS_TO_TICKS(50));
             }
             if (ok || s_retry_abort) break;
         }
 
         if (ok) {
             ESP_LOGI(TAG, "Connected on attempt %d", attempt + 1);
-            // Green LED for 3 sec as success indicator
             set_state(WIFI_STATE_STA_OK);
-            uint32_t green_end = esp_timer_get_time() / 1000 + 3000;
-            while ((esp_timer_get_time() / 1000) < green_end && !s_retry_abort) {
-                vTaskDelay(pdMS_TO_TICKS(100));
-            }
-            led_off();
-
-            // Start companion AP for 3 min so user can still reconfigure
             wifi_mgr_start_ap();
-            extern void wifi_prov_start(void);
-            extern void wifi_prov_stop(void);
             wifi_prov_start();
             // Schedule AP auto-stop after 3 min
             vTaskDelay(pdMS_TO_TICKS(180000));
@@ -445,11 +374,6 @@ void wifi_mgr_start_retry_loop(bool is_reconnect)
 //  Provisioning Trigger
 // ═══════════════════════════════════════════════════════════════
 
-// Forward declarations from wifi_provisioning.h
-extern void wifi_prov_start(void);
-extern void wifi_prov_stop(void);
-extern void wifi_prov_stop(void);
-
 void wifi_mgr_trigger_provisioning(void)
 {
     wifi_mgr_stop_retry();
@@ -481,35 +405,24 @@ static bool     s_btn_up_triggered  = false;
 
 bool wifi_mgr_handle_buttons(void)
 {
-    // BTN_UP (G9): long press 3s → provisioning
-    if (BTN_UP.isPressed()) {
+    // BTN_TOP (G1): long press 3s → provisioning
+    if (BTN_TOP.isPressed()) {
         if (!s_btn_up_pressed_ms) {
             s_btn_up_pressed_ms = esp_timer_get_time() / 1000;
             s_btn_up_triggered  = false;
-            M5.Led.setBrightness(60);
-            M5.Led.setAllColor(0, 0, 255);
-            M5.Led.display();
+            led_set_color(0, 0, 255);  // blue: preparing
         }
         uint32_t elapsed = (esp_timer_get_time() / 1000) - s_btn_up_pressed_ms;
         if (elapsed >= 3000 && !s_btn_up_triggered) {
             s_btn_up_triggered = true;
-            M5.Led.setAllColor(0, 255, 0);
-            M5.Led.display();
+            led_set_color(0, 255, 0);  // green: confirmed
             vTaskDelay(pdMS_TO_TICKS(200));
-            ESP_LOGI(TAG, "BTN_UP long press: provisioning");
+            ESP_LOGI(TAG, "BTN_TOP long press: provisioning");
             wifi_mgr_trigger_provisioning();
             return true;
         }
     } else {
         s_btn_up_pressed_ms = 0;
-    }
-
-    // BTN_TOP (G1): long press 5s → deep sleep
-    if (BTN_TOP.wasHold()) {
-        ESP_LOGI(TAG, "BTN_TOP hold: deep sleep");
-        M5.Led.setBrightness(0);
-        M5.Led.display();
-        M5.Power.deepSleep();
     }
 
     return false;
