@@ -11,6 +11,7 @@
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <esp_heap_caps.h>
+#include <esp_jpeg_dec.h>
 #include <esp_wifi.h>
 #include <esp_event.h>
 #include <esp_netif.h>
@@ -417,10 +418,59 @@ void AlbumApp::render()
     if (_img_buf) {
         uint32_t t0 = esp_timer_get_time() / 1000;
 
-        // 16-bit sprite first (handles 4:4:4 JPEG, unlike 8-bit palette path)
         g_canvas->fillScreen(TFT_WHITE);
         bool ok = false;
+
+        // Decode with esp_new_jpeg; render to 16-bit sprite → EPD directly (skip canvas palette)
         {
+            jpeg_dec_handle_t jdec = NULL;
+            jpeg_dec_config_t cfg = DEFAULT_JPEG_DEC_CONFIG();
+            cfg.output_type = JPEG_PIXEL_FORMAT_RGB565_BE;
+            if (jpeg_dec_open(&cfg, &jdec) == JPEG_ERR_OK) {
+                jpeg_dec_io_t io = { .inbuf = _img_buf, .inbuf_len = (int)_img_len };
+                jpeg_dec_header_info_t hdr;
+                if (jpeg_dec_parse_header(jdec, &io, &hdr) == JPEG_ERR_OK) {
+                    int out_len = 0;
+                    jpeg_dec_get_outbuf_len(jdec, &out_len);
+                    ESP_LOGI(TAG, "JPEG: %dx%d, outbuf=%d", hdr.width, hdr.height, out_len);
+                    if (out_len > 0) {
+                        uint8_t* out = (uint8_t*)jpeg_calloc_align(out_len, 16);
+                        if (out) {
+                            io.outbuf = out;
+                            io.out_size = out_len;
+                            if (jpeg_dec_process(jdec, &io) == JPEG_ERR_OK) {
+                                ok = true;
+                                // Push decoded RGB565 directly to EPD (skip canvas palette)
+                                int cw = (w < hdr.width) ? w : hdr.width;
+                                int ch = (h < hdr.height) ? h : hdr.height;
+                                M5Canvas tmp(&M5.Display);
+                                tmp.setColorDepth(16);
+                                if (tmp.createSprite(w, h)) {
+                                    const uint16_t* src = (const uint16_t*)out;
+                                    for (int sy = 0; sy < ch; sy++) {
+                                        tmp.pushImage(0, sy, cw, 1, src + sy * hdr.width);
+                                    }
+                                    tmp.pushSprite(0, 0);
+                                    M5.Display.display();
+                                    tmp.deleteSprite();
+                                }
+                            }
+                            jpeg_free_align(out);
+                        }
+                    }
+                }
+                jpeg_dec_close(jdec);
+            }
+        }
+        if (ok) {
+            uint32_t t1 = esp_timer_get_time() / 1000;
+            ESP_LOGI(TAG, "decode: OK (%dms, %zu bytes)", (int)(t1 - t0), _img_len);
+            return;  // skip canvas push + display (already done via display sprite)
+        }
+
+        if (!ok) {
+            // Fallback: M5GFX drawJpg via 16-bit sprite
+            ESP_LOGW(TAG, "esp_new_jpeg failed, trying M5GFX drawJpg...");
             M5Canvas tmp(g_canvas);
             tmp.setColorDepth(16);
             if (tmp.createSprite(w, h)) {
@@ -430,23 +480,16 @@ void AlbumApp::render()
             }
         }
 
-        if (!ok) {
-            // Fallback: direct 8-bit canvas (4:2:0 JPEG)
-            ESP_LOGW(TAG, "16-bit sprite failed, trying 8-bit direct...");
-            ok = g_canvas->drawJpg(_img_buf, _img_len, 0, 0, w, h, 0, 0, 1.0f);
-        }
-
         uint32_t t1 = esp_timer_get_time() / 1000;
-        ESP_LOGI(TAG, "drawJpg: %s (%dms, %zu bytes -> %dx%d)",
+        ESP_LOGI(TAG, "decode: %s (%dms, %zu bytes -> %dx%d)",
                  ok ? "OK" : "FAIL",
                  (int)(t1 - t0), _img_len, w, h);
 
         if (!ok) {
             g_canvas->setTextColor(TFT_RED);
             g_canvas->setFont(&fonts::Font4);
-            const char* msg = "Decode Failed";
-            g_canvas->drawString(msg, (w - (int)strlen(msg) * 16) / 2, h / 2 - 14);
-            ESP_LOGE(TAG, "drawJpg returned false — unsupported format?");
+            g_canvas->drawString("Decode Failed", (w - 140) / 2, h / 2 - 14);
+            ESP_LOGE(TAG, "all JPEG decode attempts failed");
         }
     } else {
         g_canvas->fillScreen(TFT_BLACK);

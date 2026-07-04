@@ -13,6 +13,7 @@ idf_component_register(
     REQUIRES
         M5Unified
         M5GFX
+        esp_new_jpeg
         nvs_flash
         driver
         esp_wifi
