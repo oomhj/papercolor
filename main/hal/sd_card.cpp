@@ -83,10 +83,8 @@ bool sd_card_mount(void)
     sd_power(true);
     vTaskDelay(pdMS_TO_TICKS(50));
 
-    // SD card uses SPI2_HOST which is shared with the EPD.
-    // The bus is already initialized by M5GFX (MOSI+CLK).
-    // sdspi internally configures MISO via GPIO matrix.
-    // We do NOT free/reinit the bus here — that would break the EPD.
+    // Acquire bus (forces EPD_CS HIGH, barrier delay)
+    spi_bus_acquire(SPI_OWNER_SD);
 
     // Configure sdspi device
     sdspi_device_config_t dev_cfg = SDSPI_DEVICE_CONFIG_DEFAULT();
@@ -130,7 +128,7 @@ void sd_card_unmount(void)
 {
     if (!s_mounted) return;
 
-    spi_bus_claim_sd();
+    spi_bus_acquire(SPI_OWNER_SD);
 
     // Flush and unmount
     esp_vfs_fat_sdcard_unmount("/sd", s_card);

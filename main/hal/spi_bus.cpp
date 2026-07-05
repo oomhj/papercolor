@@ -1,36 +1,34 @@
 /**
- * PaperColor — Shared SPI Bus Implementation
+ * PaperColor — SPI Bus Arbiter Implementation
  *
- * Manages CS isolation between EPD (M5GFX) and SD card (sdspi).
- * Each driver owns its own CS pin. This module temporarily takes
- * over the OTHER device's CS as GPIO when claiming the bus,
- * ensuring only one device is active at a time.
+ * Owner token state machine:
+ *   IDLE ──acquire(EPD)──→ EPD_OWNS ──release──→ IDLE
+ *   IDLE ──acquire(SD)───→ SD_OWNS  ──release──→ IDLE
  *
- * IMPORTANT: Never gpio_reset_pin() a CS pin owned by an active
- * SPI device — that destroys the device's CS configuration.
- * Always release back to input/float mode so the driver can
- * reclaim it on its next transaction.
+ * Each driver (M5GFX, sdspi) manages its own CS pin.
+ * The arbiter only ensures isolation when switching owners.
  */
 
 #include "spi_bus.h"
 #include <esp_log.h>
+#include <esp_rom_sys.h>
 #include <driver/spi_common.h>
 #include <cstring>
 
 static const char* TAG = "SPIBus";
-static bool s_inited = false;
+static bool     s_inited = false;
+static spi_owner_t s_owner = SPI_OWNER_NONE;
+static gpio_num_t  s_taken_over = GPIO_NUM_NC;  // CS pin taken over as GPIO
 
-// ── Internal ─────────────────────────────────────────────────
+// ── GPIO helpers ─────────────────────────────────────────────
 
-/** Take over a CS pin as GPIO and force it HIGH. */
 static void cs_force_high(gpio_num_t pin)
 {
     gpio_set_direction(pin, GPIO_MODE_OUTPUT);
     gpio_set_level(pin, 1);
 }
 
-/** Release a GPIO-taken-over CS pin back to input (SPI driver reclaims). */
-static void cs_release_gpio(gpio_num_t pin)
+static void cs_release_pin(gpio_num_t pin)
 {
     gpio_set_direction(pin, GPIO_MODE_INPUT);
     gpio_set_pull_mode(pin, GPIO_PULLUP_ONLY);
@@ -42,13 +40,13 @@ bool spi_bus_init(void)
 {
     if (s_inited) return true;
 
-    // At boot, no driver has claimed CS pins yet — safe to init both HIGH
+    // Ensure both CS start de-asserted
     cs_force_high(SPI_PIN_EPD_CS);
     cs_force_high(SPI_PIN_SD_CS);
-    cs_release_gpio(SPI_PIN_EPD_CS);
-    cs_release_gpio(SPI_PIN_SD_CS);
+    cs_release_pin(SPI_PIN_EPD_CS);
+    cs_release_pin(SPI_PIN_SD_CS);
 
-    // Init SPI bus with full 3-wire setup (including MISO for SD)
+    // Init SPI bus with full 3-wire (includes MISO for SD reads)
     spi_bus_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.mosi_io_num     = SPI_PIN_MOSI;
@@ -72,36 +70,33 @@ bool spi_bus_init(void)
     return true;
 }
 
-/**
- * Called before EPD (M5GFX) uses the bus.
- * Takes over SD_CS as GPIO and forces it HIGH so SD stays quiet.
- * EPD_CS is owned by M5GFX — we leave it alone.
- */
-void spi_bus_claim_epd(void)
+void spi_bus_acquire(spi_owner_t owner)
 {
-    cs_force_high(SPI_PIN_SD_CS);
+    if (!s_inited || owner == SPI_OWNER_NONE) return;
+    if (owner == s_owner) return;  // already ours
+
+    // Release previous owner if any
+    if (s_owner != SPI_OWNER_NONE) spi_bus_release();
+
+    // Take over the OTHER device's CS as GPIO, force HIGH
+    gpio_num_t other_cs = (owner == SPI_OWNER_EPD) ? SPI_PIN_SD_CS : SPI_PIN_EPD_CS;
+    cs_force_high(other_cs);
+    s_taken_over = other_cs;
+    s_owner = owner;
+
+    // Barrier delay: let CS settle before next transaction
+    esp_rom_delay_us(10);
 }
 
-/**
- * Called before SD card (sdspi) uses the bus.
- * Takes over EPD_CS as GPIO and forces it HIGH so EPD stays quiet.
- * SD_CS is owned by sdspi — we leave it alone.
- */
-void spi_bus_claim_sd(void)
-{
-    cs_force_high(SPI_PIN_EPD_CS);
-}
-
-/**
- * Release the GPIO-taken-over CS pin so the original SPI driver
- * can reclaim it on its next transaction.
- * Which pin to release depends on who last claimed the bus.
- */
 void spi_bus_release(void)
 {
-    // Release both — whichever was taken over will go back to input.
-    // For the one that wasn't taken over, this is a no-op
-    // (it's already in its SPI-driver-controlled state).
-    cs_release_gpio(SPI_PIN_EPD_CS);
-    cs_release_gpio(SPI_PIN_SD_CS);
+    if (s_owner == SPI_OWNER_NONE) return;
+
+    // Release taken-over CS pin back to input (SPI driver reclaims)
+    if (s_taken_over != GPIO_NUM_NC) {
+        cs_release_pin(s_taken_over);
+        s_taken_over = GPIO_NUM_NC;
+    }
+
+    s_owner = SPI_OWNER_NONE;
 }

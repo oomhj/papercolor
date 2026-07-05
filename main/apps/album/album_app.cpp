@@ -9,6 +9,7 @@
 #include "hal/led_driver.h"
 #include "wifi_manager.h"
 #include "filter.h"
+#include "hal/sd_card.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -374,6 +375,15 @@ bool AlbumApp::init() {
     _filter_idx = 0;  // default: None
     wifi_mgr_init();
     led_init(); led_async_start();
+
+    // Test SD card mount
+    if (sd_card_mount()) {
+        ESP_LOGI(TAG, "SD card mounted OK");
+        sd_card_unmount();
+    } else {
+        ESP_LOGW(TAG, "SD card mount failed (no card?)");
+    }
+
     return true;
 }
 
@@ -558,8 +568,7 @@ render_done:
     }
 
     uint32_t t2 = esp_timer_get_time() / 1000;
-    g_canvas->pushSprite(0, 0);
-    M5.Display.display();
+    pc_hal_display();
     uint32_t t3 = esp_timer_get_time() / 1000;
     ESP_LOGI(TAG, "display: pushed to EPD (%dms)", (int)(t3 - t2));
 }

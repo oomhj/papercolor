@@ -131,7 +131,10 @@ void pc_hal_update(void)
 void pc_hal_display(void)
 {
     if (g_canvas) {
+        spi_bus_acquire(SPI_OWNER_EPD);
         g_canvas->pushSprite(0, 0);
+        M5.Display.display();
+        spi_bus_release();
     }
 }
 
