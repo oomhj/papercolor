@@ -20,6 +20,7 @@
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <esp_heap_caps.h>
+#include <esp_netif.h>
 #include <esp_jpeg_dec.h>
 #include <esp_http_client.h>
 #include <esp_crt_bundle.h>
@@ -30,29 +31,76 @@ static const char* TAG = "Album";
 #define SLIDE_INTERVAL_MS  (30ULL * 60 * 1000)   // 30 min
 #define CHECK_INTERVAL_MS  (60ULL * 60 * 1000)   // 1 hour — how often to check if day changed
 
-// ── WiFi helper (wraps wifi_manager) ────────────────────────
+// ── WiFi config from SD (/sd/wifi.txt) ─────────────────────
+// Format: first line = SSID, second line = password
+
+static bool load_wifi_from_sd(void)
+{
+    char ssid[64] = {}, pass[64] = {};
+
+    sd_card_lock(2000);
+    FILE* f = fopen("/sd/wifi.txt", "r");
+    if (!f) { sd_card_unlock(); return false; }
+
+    if (!fgets(ssid, sizeof(ssid), f) || !fgets(pass, sizeof(pass), f)) {
+        fclose(f); sd_card_unlock(); return false;
+    }
+    fclose(f); sd_card_unlock();
+
+    ssid[strcspn(ssid, "\r\n")] = '\0';
+    pass[strcspn(pass, "\r\n")] = '\0';
+    if (strlen(ssid) == 0) return false;
+
+    ESP_LOGI(TAG, "WiFi loaded from SD: %s", ssid);
+    wifi_mgr_save_network(0, ssid, pass);
+    return true;
+}
+
+static void save_wifi_to_sd(void)
+{
+    char ssid[WIFI_MAX_SSID_LEN + 1] = {}, pass[WIFI_MAX_PASS_LEN + 1] = {};
+    if (!wifi_mgr_load_network(0, ssid, sizeof(ssid), pass, sizeof(pass))) return;
+    if (strlen(ssid) == 0) return;
+
+    sd_card_lock(2000);
+    FILE* f = fopen("/sd/wifi.txt", "w");
+    if (f) { fprintf(f, "%s\n%s\n", ssid, pass); fclose(f); }
+    sd_card_unlock();
+    ESP_LOGI(TAG, "WiFi saved to /sd/wifi.txt: %s", ssid);
+}
+
+static void set_dns(void)
+{
+    esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (!netif) return;
+    esp_netif_dns_info_t dns{};
+    dns.ip.u_addr.ip4.addr = esp_ip4addr_aton("114.114.114.114");
+    dns.ip.type = ESP_IPADDR_TYPE_V4;
+    esp_netif_set_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns);
+    ESP_LOGI(TAG, "DNS set to 114.114.114.114");
+}
 
 static bool wifi_ensure_connected(void)
 {
-    // wifi_mgr_init() already called in AlbumApp::init()
-    if (wifi_mgr_get_state() == WIFI_STATE_STA_OK) {
-        return true;  // already connected
-    }
+    if (wifi_mgr_get_state() == WIFI_STATE_STA_OK) return true;
 
-    // Try saved networks first (from provisioning)
+    // 1. Try saved networks (NVS, from provisioning or previous SD load)
     if (wifi_mgr_connect_sta(15000)) {
+        set_dns();
+        save_wifi_to_sd();   // persist to SD
         return true;
     }
 
-    // Fallback to hardcoded credentials
-    const char* ssid = "Jason-home";
-    const char* pass = "admin1234";
-    wifi_mgr_save_network(0, ssid, pass);
-    if (wifi_mgr_connect_sta(15000)) {
+    // 2. Try SD card wifi.txt
+    if (load_wifi_from_sd() && wifi_mgr_connect_sta(15000)) {
+        set_dns();
+        save_wifi_to_sd();
         return true;
     }
 
-    ESP_LOGW(TAG, "WiFi not available");
+    // 3. All failed — start AP provisioning
+    ESP_LOGW(TAG, "No WiFi config, starting AP provisioning...");
+    wifi_mgr_trigger_provisioning();
     return false;
 }
 
@@ -284,8 +332,10 @@ bool AlbumApp::download_one(int index)
 
     uint8_t* jpeg = nullptr;
     size_t len = 0;
-    if (!http_fetch_one("https://bing.img.run/rand_1366x768.php", &jpeg, &len))
+    if (!http_fetch_one("https://bing.img.run/rand_1366x768.php", &jpeg, &len)) {
+        led_async_flash(255, 0, 0, 3);  // red: HTTP failed
         return false;
+    }
 
     sd_card_lock(2000);
     unlink(path);  // remove old file if exists
@@ -547,6 +597,7 @@ void AlbumApp::run_pending_download(void)
             }
         } else {
             ESP_LOGW(TAG, "WiFi failed — deferring download");
+            led_async_flash(255, 0, 0, 3);  // red: no network
         }
     }
 
