@@ -62,7 +62,7 @@ bool spi_bus_init(void);
 /**
  * @brief  Claim exclusive access to the SPI bus for an owner.
  *         Blocks up to timeout_ms if another owner holds the bus.
- *         Forces the other device's CS HIGH for isolation.
+ *         CS isolation is handled by the SPI drivers — no pins are touched.
  * @param  owner      SPI_OWNER_EPD or SPI_OWNER_SD.
  * @param  timeout_ms Max wait in ms (UINT32_MAX = wait forever).
  * @return true if claim succeeded.
@@ -71,7 +71,6 @@ bool spi_bus_claim(spi_owner_t owner, uint32_t timeout_ms);
 
 /**
  * @brief  Release exclusive access to the SPI bus.
- *         Releases the other device's CS pin back to the SPI driver.
  */
 void spi_bus_release(void);
 

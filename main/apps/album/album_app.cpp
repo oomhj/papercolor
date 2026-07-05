@@ -1,10 +1,11 @@
 /**
- * PaperColor — Network Photo Album
+ * PaperColor — Daily Photo Slideshow
  *
- * Fetches random scenery images from API, displays on EPD.
- * Decoded images cached on SD card for instant offline rendering.
- * BTN_TOP: refresh  |  BTN_TOP hold: sleep
+ * Stores 10 images in /sd/album/.  Updates daily via WiFi on first
+ * use of each new day.  Falls back to existing images if no network.
+ * TOP long press forces a manual update.
  */
+
 #include "album_app.h"
 #include "hal/hal.h"
 #include "hal/sd_card.h"
@@ -14,6 +15,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
+#include <ctime>
+#include <dirent.h>
+#include <sys/stat.h>
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <esp_heap_caps.h>
@@ -27,17 +32,13 @@
 #include <lwip/netdb.h>
 #include <lwip/sockets.h>
 #include <arpa/inet.h>
+#include <M5Unified.hpp>
 
 static const char* TAG = "Album";
 
-// ── Image API ─────────────────────────────────────────────────
-static const char* IMAGE_URL = "https://bing.img.run/rand_1366x768.php";
+#define SLIDE_INTERVAL_MS  (30ULL * 60 * 1000)   // 30 min
+#define CHECK_INTERVAL_MS  (60ULL * 60 * 1000)   // 1 hour — how often to check if day changed
 
-// ── SD cache ─────────────────────────────────────────────────
-// Raw JPEG data saved verbatim to SD card. Self-describing format
-// (JPEG file header FF D8) — no wrapper header needed.
-
-// ── WiFi ──────────────────────────────────────────────────────
 #ifndef ALBUM_SSID
 #define ALBUM_SSID "Jason-home"
 #endif
@@ -45,105 +46,55 @@ static const char* IMAGE_URL = "https://bing.img.run/rand_1366x768.php";
 #define ALBUM_PASS "admin1234"
 #endif
 
-static bool wifi_connect()
-{
-    ESP_LOGI(TAG, "WiFi connecting to SSID: \"%s\" (pass len: %zu)",
-             ALBUM_SSID, strlen(ALBUM_PASS));
+// ── WiFi ────────────────────────────────────────────────────
 
-    static bool inited = false;
-    if (!inited) {
-        // ── NVS ──
+static bool s_wifi_inited = false;
+
+static bool wifi_ensure_connected(void)
+{
+    ESP_LOGI(TAG, "WiFi connecting...");
+
+    if (!s_wifi_inited) {
         esp_err_t e = nvs_flash_init();
         if (e == ESP_ERR_NVS_NO_FREE_PAGES || e == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-            ESP_LOGW(TAG, "NVS needs erase (0x%x)", e);
             nvs_flash_erase();
             e = nvs_flash_init();
         }
-        if (e != ESP_OK) {
-            ESP_LOGE(TAG, "NVS init failed: %s", esp_err_to_name(e));
-            return false;
-        }
-        ESP_LOGD(TAG, "NVS init OK");
+        if (e != ESP_OK) { ESP_LOGE(TAG, "NVS: %s", esp_err_to_name(e)); return false; }
 
-        // ── Netif ──
-        esp_err_t netif_e = esp_netif_init();
-        if (netif_e != ESP_OK && netif_e != ESP_ERR_INVALID_STATE) {
-            ESP_LOGE(TAG, "netif init failed: %s", esp_err_to_name(netif_e));
-            return false;
-        }
-        esp_err_t evt_e = esp_event_loop_create_default();
-        if (evt_e != ESP_OK && evt_e != ESP_ERR_INVALID_STATE) {
-            ESP_LOGE(TAG, "event loop failed: %s", esp_err_to_name(evt_e));
-            return false;
-        }
-        esp_netif_t* sta_netif = esp_netif_create_default_wifi_sta();
-        if (!sta_netif) {
-            ESP_LOGE(TAG, "create default wifi sta failed");
-            return false;
-        }
-        ESP_LOGD(TAG, "WiFi netif created");
+        esp_netif_init();
+        esp_event_loop_create_default();
+        esp_netif_create_default_wifi_sta();
 
-        // ── WiFi Init ──
         wifi_init_config_t wcfg = WIFI_INIT_CONFIG_DEFAULT();
-        esp_err_t wif_e = esp_wifi_init(&wcfg);
-        if (wif_e != ESP_OK && wif_e != ESP_ERR_INVALID_STATE) {
-            ESP_LOGE(TAG, "wifi init failed: %s", esp_err_to_name(wif_e));
-            return false;
-        }
+        if (esp_wifi_init(&wcfg) != ESP_OK) { ESP_LOGE(TAG, "wifi init fail"); return false; }
+        esp_wifi_set_mode(WIFI_MODE_STA);
 
-        // ── Set STA mode ──
-        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_set_mode(WIFI_MODE_STA));
         wifi_config_t wc = {};
         strcpy((char*)wc.sta.ssid, ALBUM_SSID);
         strcpy((char*)wc.sta.password, ALBUM_PASS);
         wc.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
-        wc.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
-        esp_err_t cfg_e = esp_wifi_set_config(WIFI_IF_STA, &wc);
-        if (cfg_e != ESP_OK) {
-            ESP_LOGE(TAG, "set config failed: %s", esp_err_to_name(cfg_e));
-            return false;
-        }
-        ESP_LOGI(TAG, "WiFi configured: %s", ALBUM_SSID);
-
-        // ── Start ──
-        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_start());
-        inited = true;
-    } else {
-        // Already initialized — check if still connected
-        wifi_ap_record_t ap;
-        if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
-            ESP_LOGI(TAG, "WiFi already connected to %s", ap.ssid);
-            return true;
-        }
-        ESP_LOGI(TAG, "WiFi disconnected, reconnecting...");
+        esp_wifi_set_config(WIFI_IF_STA, &wc);
+        esp_wifi_start();
+        s_wifi_inited = true;
     }
 
-    // ── Connect (or reconnect) ──
-    ESP_LOGI(TAG, "WiFi started, connecting...");
-    esp_err_t conn_e = esp_wifi_connect();
-    if (conn_e != ESP_OK) {
-        ESP_LOGE(TAG, "esp_wifi_connect returned: %s", esp_err_to_name(conn_e));
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+        return true;
     }
 
-    // ── Wait for connection ──
-    uint32_t deadline = esp_timer_get_time() / 1000 + 25000;
-    int poll_count = 0;
+    esp_wifi_connect();
+
+    uint32_t deadline = esp_timer_get_time() / 1000 + 15000;
     while (esp_timer_get_time() / 1000 < deadline) {
-        wifi_ap_record_t ap;
-        esp_err_t r = esp_wifi_sta_get_ap_info(&ap);
-        if (r == ESP_OK) {
-            ESP_LOGI(TAG, "WiFi connected — SSID: %s, RSSI: %d, Channel: %d, Auth: %d",
-                     ap.ssid, ap.rssi, ap.primary, ap.authmode);
-
-            // Wait for IP + DNS from DHCP
+        if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
             esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
             if (netif) {
                 for (int i = 0; i < 50; i++) {
                     esp_netif_ip_info_t ip;
-                    if (esp_netif_get_ip_info(netif, &ip) == ESP_OK && ip.ip.addr != 0) {
-                        ESP_LOGI(TAG, "  IP: " IPSTR, IP2STR(&ip.ip));
+                    if (esp_netif_get_ip_info(netif, &ip) == ESP_OK && ip.ip.addr != 0)
                         break;
-                    }
                     vTaskDelay(pdMS_TO_TICKS(200));
                 }
                 vTaskDelay(pdMS_TO_TICKS(500));
@@ -151,320 +102,498 @@ static bool wifi_connect()
                 dns.ip.u_addr.ip4.addr = esp_ip4addr_aton("114.114.114.114");
                 dns.ip.type = ESP_IPADDR_TYPE_V4;
                 esp_netif_set_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns);
-                ESP_LOGI(TAG, "  DNS: 114.114.114.114");
             }
             return true;
         }
-        if (poll_count % 25 == 0) {
-            ESP_LOGI(TAG, "  waiting for WiFi... (%d/%dms, err: %s)",
-                     (int)(esp_timer_get_time() / 1000) - (int)(deadline - 25000),
-                     25000, esp_err_to_name(r));
-        }
-        poll_count++;
         vTaskDelay(pdMS_TO_TICKS(200));
     }
-
-    ESP_LOGE(TAG, "WiFi timeout after 25s — no AP info received");
+    ESP_LOGW(TAG, "WiFi timeout (15s)");
     return false;
 }
 
-// ── HTTP fetch ────────────────────────────────────────────────
+// ── HTTP fetch ──────────────────────────────────────────────
 
-static bool http_fetch_image(const char* url,
-                              uint8_t** out_buf, size_t* out_len)
+struct http_ctx { uint8_t* buf; size_t len; size_t cap; };
+
+static esp_err_t http_event_handler(esp_http_client_event_t* evt)
 {
-    *out_buf = nullptr; *out_len = 0;
-
-    ESP_LOGI(TAG, "HTTP fetch start");
-    ESP_LOGI(TAG, "  URL: %s", url);
-    ESP_LOGI(TAG, "  Timeout: 30000ms, Buffer: 8192");
-
-    // ── DNS resolve (debug) ──
-    {
-        const char* domain_start = strstr(url, "://");
-        if (domain_start) {
-            domain_start += 3;
-            const char* domain_end = strchr(domain_start, '/');
-            if (!domain_end) domain_end = domain_start + strlen(domain_start);
-            char domain[128];
-            size_t dlen = (size_t)(domain_end - domain_start);
-            if (dlen > sizeof(domain) - 1) dlen = sizeof(domain) - 1;
-            memcpy(domain, domain_start, dlen);
-            domain[dlen] = '\0';
-
-            struct addrinfo hints = {};
-            struct addrinfo* res = nullptr;
-            hints.ai_family = AF_UNSPEC;
-            hints.ai_socktype = SOCK_STREAM;
-            int dns_ret = getaddrinfo(domain, nullptr, &hints, &res);
-            if (dns_ret == 0 && res) {
-                char ip_str[64] = {};
-                if (res->ai_family == AF_INET) {
-                    struct sockaddr_in* sa = (struct sockaddr_in*)res->ai_addr;
-                    inet_ntop(AF_INET, &sa->sin_addr, ip_str, sizeof(ip_str));
-                } else if (res->ai_family == AF_INET6) {
-                    struct sockaddr_in6* sa6 = (struct sockaddr_in6*)res->ai_addr;
-                    inet_ntop(AF_INET6, &sa6->sin6_addr, ip_str, sizeof(ip_str));
-                }
-                ESP_LOGI(TAG, "  DNS: %s → %s", domain, ip_str);
-                freeaddrinfo(res);
-            } else {
-                ESP_LOGW(TAG, "  DNS: %s resolution failed (gai: %d)", domain, dns_ret);
-            }
+    auto* ctx = (http_ctx*)evt->user_data;
+    if (evt->event_id == HTTP_EVENT_ON_DATA && evt->data_len > 0) {
+        size_t needed = ctx->len + evt->data_len + 4096;
+        if (needed > ctx->cap) {
+            uint8_t* nb = (uint8_t*)heap_caps_realloc(ctx->buf, needed,
+                MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+            if (!nb) nb = (uint8_t*)realloc(ctx->buf, needed);
+            if (!nb) return ESP_FAIL;
+            ctx->buf = nb;
+            ctx->cap = needed;
         }
+        memcpy(ctx->buf + ctx->len, evt->data, evt->data_len);
+        ctx->len += evt->data_len;
     }
+    return ESP_OK;
+}
 
-    // ── HTTP client setup ──
+static bool http_fetch_one(const char* url, uint8_t** out, size_t* out_len)
+{
+    *out = nullptr; *out_len = 0;
+
     esp_http_client_config_t cfg = {};
-    cfg.url                       = url;
-    cfg.timeout_ms                = 30000;
-    cfg.buffer_size               = 8192;
-    cfg.buffer_size_tx            = 1024;
-    cfg.crt_bundle_attach         = esp_crt_bundle_attach;
-    cfg.method                    = HTTP_METHOD_GET;
-    cfg.max_redirection_count     = 5;
-    cfg.skip_cert_common_name_check = false;
+    cfg.url = url;
+    cfg.timeout_ms = 20000;
+    cfg.buffer_size = 8192;
+    cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    cfg.method = HTTP_METHOD_GET;
+    cfg.max_redirection_count = 5;
 
-    struct { uint8_t* buf; size_t len; size_t cap; } acc = {};
+    http_ctx acc = {};
     cfg.user_data = &acc;
-
-    cfg.event_handler = [](esp_http_client_event_t* evt) -> esp_err_t {
-        auto* a = (decltype(acc)*)evt->user_data;
-        if (evt->event_id == HTTP_EVENT_ON_HEADER) {
-            ESP_LOGI(TAG, "  Response header: %s: %s",
-                     evt->header_key, evt->header_value);
-        }
-        if (evt->event_id == HTTP_EVENT_ON_DATA && evt->data_len > 0) {
-            size_t needed = a->len + evt->data_len + 4096;
-            if (needed > a->cap) {
-                uint8_t* nb = (uint8_t*)heap_caps_realloc(
-                    a->buf, needed, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-                if (!nb) {
-                    nb = (uint8_t*)realloc(a->buf, needed);
-                }
-                if (!nb) {
-                    ESP_LOGE(TAG, "OOM accumulating body (%zu bytes)", needed);
-                    return ESP_FAIL;
-                }
-                a->buf = nb;
-                a->cap = needed;
-            }
-            memcpy(a->buf + a->len, evt->data, evt->data_len);
-            a->len += evt->data_len;
-        }
-        return ESP_OK;
-    };
+    cfg.event_handler = http_event_handler;
 
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
-    if (!c) {
-        ESP_LOGE(TAG, "http client init failed — OOM?");
-        return false;
-    }
-    ESP_LOGD(TAG, "HTTP client initialized");
+    if (!c) return false;
 
     esp_http_client_set_header(c, "User-Agent",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/149.0.0.0 Safari/537.36");
-    esp_http_client_set_header(c, "Cache-Control", "no-cache");
-    ESP_LOGI(TAG, "Headers: UA + Cache-Control set");
+        "AppleWebKit/537.36 Chrome/149.0.0.0 Safari/537.36");
 
-    esp_err_t err;
-    int elapsed_ms = 0;
-    for (int retry = 0; retry < 2; retry++) {
-        if (retry) {
-            ESP_LOGW(TAG, "  Retry %d...", retry);
-            vTaskDelay(pdMS_TO_TICKS(1000));
-        }
-        uint32_t t0 = esp_timer_get_time() / 1000;
-        err = esp_http_client_perform(c);
-        uint32_t t1 = esp_timer_get_time() / 1000;
-        elapsed_ms = t1 - t0;
-        if (err == ESP_OK) break;
-        ESP_LOGE(TAG, "HTTP perform FAILED after %dms", elapsed_ms);
-        ESP_LOGE(TAG, "  Error: %s (0x%x)", esp_err_to_name(err), err);
-        if (err == ESP_ERR_HTTP_CONNECT) {
-            ESP_LOGE(TAG, "  → TCP connection refused / timed out");
-        } else if (err == ESP_ERR_HTTP_WRITE_DATA) {
-            ESP_LOGE(TAG, "  → Failed to send request headers");
-        } else if (err == ESP_ERR_HTTP_FETCH_HEADER) {
-            ESP_LOGE(TAG, "  → Response header parse error");
-        } else if (err == ESP_ERR_HTTP_INVALID_TRANSPORT) {
-            ESP_LOGE(TAG, "  → Invalid transport (TLS issue?)");
-        } else if (err == ESP_ERR_HTTP_CONNECTING) {
-            ESP_LOGE(TAG, "  → Netconn open failed");
-        } else if (err == ESP_ERR_HTTP_EAGAIN) {
-            ESP_LOGE(TAG, "  → Resource temporarily unavailable");
-        }
-    }
-    if (err != ESP_OK) {
-        esp_http_client_cleanup(c);
-        return false;
-    }
-
+    esp_err_t err = esp_http_client_perform(c);
     int status = esp_http_client_get_status_code(c);
-    int64_t len = esp_http_client_get_content_length(c);
-    char url_buf[256] = {};
-    esp_http_client_get_url(c, url_buf, sizeof(url_buf));
-
-    ESP_LOGI(TAG, "HTTP response — %s", url_buf);
-    ESP_LOGI(TAG, "  Status: %d  |  Size: %lld bytes  |  Time: %dms",
-             status, (long long)len, elapsed_ms);
-
-    if (status != 200) {
-        ESP_LOGE(TAG, "HTTP error %d (expected 200)", status);
-        if (status == 301 || status == 302 || status == 307 || status == 308) {
-            ESP_LOGE(TAG, "  Redirect not followed");
-        } else if (status == 403) {
-            ESP_LOGE(TAG, "  Forbidden");
-        } else if (status == 404) {
-            ESP_LOGE(TAG, "  Not found");
-        } else if (status >= 500) {
-            ESP_LOGE(TAG, "  Server error");
-        }
-        if (acc.buf) free(acc.buf);
-        esp_http_client_cleanup(c);
-        return false;
-    }
-
-    ESP_LOGI(TAG, "Body accumulated: %zu bytes", acc.len);
-    if (acc.len == 0) {
-        ESP_LOGE(TAG, "Empty response body");
-        if (acc.buf) free(acc.buf);
-        esp_http_client_cleanup(c);
-        return false;
-    }
-
-    // Scan past redirect body to find JPEG/PNG data
-    size_t skip = 0;
-    for (size_t i = 0; i + 1 < acc.len; i++) {
-        if (acc.buf[i] == 0xFF && acc.buf[i+1] == 0xD8) { skip = i; break; }
-    }
-    if (skip > 0) {
-        ESP_LOGW(TAG, "  Skipped %zu bytes of redirect body before JPEG", skip);
-        acc.len -= skip;
-        memmove(acc.buf, acc.buf + skip, acc.len);
-    }
-    ESP_LOGI(TAG, "  JPEG header: OK (FF D8) — %zu bytes", acc.len);
-
     esp_http_client_cleanup(c);
-    *out_buf = acc.buf;
+
+    if (err != ESP_OK || status != 200) { free(acc.buf); return false; }
+
+    // Find JPEG start
+    size_t skip = 0;
+    for (size_t i = 0; i + 1 < acc.len; i++)
+        if (acc.buf[i] == 0xFF && acc.buf[i+1] == 0xD8) { skip = i; break; }
+    if (skip > 0) { acc.len -= skip; memmove(acc.buf, acc.buf + skip, acc.len); }
+
+    if (acc.len < 2 || acc.buf[0] != 0xFF || acc.buf[1] != 0xD8) { free(acc.buf); return false; }
+
+    *out = acc.buf;
     *out_len = acc.len;
     return true;
 }
 
-// ── SD cache ─────────────────────────────────────────────────
+// ── JPEG decode + render ────────────────────────────────────
 
-bool AlbumApp::cache_save(const uint8_t* data, size_t len)
+static bool decode_jpeg(const uint8_t* jpeg, size_t len,
+                         uint8_t** out, int* out_sw, int* out_sh,
+                         int* out_crop_x, int* out_out_y)
 {
-    if (!_sd_mounted || !data || len == 0) return false;
+    const int w = M5.Display.width();
+    const int h = M5.Display.height();
+
+    jpeg_dec_config_t dcfg = DEFAULT_JPEG_DEC_CONFIG();
+    dcfg.output_type = JPEG_PIXEL_FORMAT_RGB565_BE;
+
+    jpeg_dec_handle_t jdec = NULL;
+    jpeg_dec_header_info_t hdr = {};
+    jpeg_dec_io_t io = {};
+    io.inbuf = (uint8_t*)jpeg;
+    io.inbuf_len = (int)len;
+
+    if (jpeg_dec_open(&dcfg, &jdec) != JPEG_ERR_OK) return false;
+    bool ok_hdr = (jpeg_dec_parse_header(jdec, &io, &hdr) == JPEG_ERR_OK);
+    jpeg_dec_close(jdec);
+    if (!ok_hdr) return false;
+
+    int sh = 400;
+    int sw = (hdr.width * sh + hdr.height / 2) / hdr.height;
+    sw = ((sw + 4) / 8) * 8;
+    if (sw < w) sw = w;
+    int crop_x = (sw > w) ? (sw - w) / 2 : 0;
+    int out_y  = (h - sh) / 2;
+
+    dcfg.scale.width = sw;
+    dcfg.scale.height = sh;
+
+    if (jpeg_dec_open(&dcfg, &jdec) != JPEG_ERR_OK) return false;
+    jpeg_dec_parse_header(jdec, &io, &hdr);
+    int out_len = 0;
+    jpeg_dec_get_outbuf_len(jdec, &out_len);
+
+    bool ok = false;
+    if (out_len > 0) {
+        uint8_t* buf = (uint8_t*)jpeg_calloc_align(out_len, 16);
+        if (buf) {
+            io.outbuf = buf; io.out_size = out_len;
+            if (jpeg_dec_process(jdec, &io) == JPEG_ERR_OK) {
+                *out = buf; *out_sw = sw; *out_sh = sh;
+                *out_crop_x = crop_x; *out_out_y = out_y;
+                ok = true;
+            } else { jpeg_free_align(buf); }
+        }
+    }
+    jpeg_dec_close(jdec);
+    return ok;
+}
+
+static void filter_and_display(uint8_t* decoded, int sw, int sh,
+                                int crop_x, int out_y)
+{
+    const int w = M5.Display.width();
+    const int h = M5.Display.height();
+    g_canvas->fillScreen(TFT_WHITE);
+
+    const uint16_t* src = (const uint16_t*)decoded + out_y * sw + crop_x;
+    uint8_t* dither = (uint8_t*)malloc(w * h);
+    if (!dither) return;
+
+    uint16_t* crop = (uint16_t*)malloc(w * h * 2);
+    if (!crop) { free(dither); return; }
+
+    for (int y = 0; y < h; y++)
+        memcpy(crop + y * w, src + y * sw, w * 2);
+
+    FILTERS[1].fn(crop, dither, w, h);  // Floyd-Steinberg
+    g_canvas->pushImage(0, 0, w, h, dither);
+    free(crop);
+    free(dither);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  AlbumApp implementation
+// ═══════════════════════════════════════════════════════════════
+
+// ── Folder / Date helpers ───────────────────────────────────
+
+int AlbumApp::get_today(void)
+{
+    m5::rtc_date_t d;
+    m5::rtc_time_t t;
+    if (!M5.Rtc.getDateTime(&d, &t)) return 0;
+    if (d.year < 2024 || d.year > 2099) return 0;
+    return d.year * 10000 + d.month * 100 + d.date;
+}
+
+int AlbumApp::read_index_date(void)
+{
+    char path[64];
+    snprintf(path, sizeof(path), "%s/index.txt", ALBUM_DIR);
 
     sd_card_lock(UINT32_MAX);
-    FILE* f = fopen(ALBUM_SD_CACHE, "w");
-    if (!f) {
-        ESP_LOGW(TAG, "cache_save: fopen failed");
-        sd_card_unlock();
-        return false;
-    }
-    size_t written = fwrite(data, 1, len, f);
+    FILE* f = fopen(path, "r");
+    if (!f) { sd_card_unlock(); return 0; }
+    int date = 0;
+    fscanf(f, "%d", &date);
     fclose(f);
     sd_card_unlock();
+    return date;
+}
 
-    if (written != len) {
-        ESP_LOGW(TAG, "cache_save: short write %zu/%zu", written, len);
-        return false;
+void AlbumApp::write_index_date(int date)
+{
+    char path[64];
+    snprintf(path, sizeof(path), "%s/index.txt", ALBUM_DIR);
+
+    sd_card_lock(UINT32_MAX);
+    FILE* f = fopen(path, "w");
+    if (f) { fprintf(f, "%d\n", date); fclose(f); }
+    sd_card_unlock();
+}
+
+bool AlbumApp::ensure_album_folder(void)
+{
+    DIR* dir = opendir(ALBUM_DIR);
+    if (!dir) {
+        ESP_LOGI(TAG, "Creating %s", ALBUM_DIR);
+        if (mkdir(ALBUM_DIR, 0777) != 0 && errno != EEXIST) {
+            ESP_LOGE(TAG, "mkdir failed: errno=%d", errno);
+            return false;
+        }
+    } else {
+        closedir(dir);
     }
-    ESP_LOGI(TAG, "JPEG cached: %zu bytes", len);
     return true;
 }
 
-bool AlbumApp::cache_load(void)
+int AlbumApp::scan_folder_images(void)
 {
-    if (!_sd_mounted) return false;
+    DIR* dir = opendir(ALBUM_DIR);
+    if (!dir) return 0;
+
+    int count = 0;
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_type == DT_REG) {
+            int n = 0;
+            if (sscanf(entry->d_name, "%d.jpg", &n) == 1 && n >= 1 && n <= ALBUM_MAX_IMAGES)
+                count++;
+        }
+    }
+    closedir(dir);
+    return count;
+}
+
+// ── Download ────────────────────────────────────────────────
+
+bool AlbumApp::download_one(int index)
+{
+    char path[64];
+    snprintf(path, sizeof(path), "%s/%d.jpg", ALBUM_DIR, index);
+    ESP_LOGI(TAG, "DL %d/%d → %s", index, ALBUM_MAX_IMAGES, path);
+
+    led_async_breath_forever(0, 0, 255);
+
+    uint8_t* jpeg = nullptr;
+    size_t len = 0;
+    if (!http_fetch_one("https://bing.img.run/rand_1366x768.php", &jpeg, &len))
+        return false;
 
     sd_card_lock(UINT32_MAX);
-    FILE* f = fopen(ALBUM_SD_CACHE, "r");
-    if (!f) {
-        sd_card_unlock();
+    FILE* f = fopen(path, "w");
+    if (f) { fwrite(jpeg, 1, len, f); fclose(f); }
+    sd_card_unlock();
+
+    free(jpeg);
+    led_async_flash(0, 255, 0, 1);
+    vTaskDelay(pdMS_TO_TICKS(300));
+    return true;
+}
+
+bool AlbumApp::update_images(void)
+{
+    ESP_LOGI(TAG, "Updating images from network...");
+    if (!wifi_ensure_connected()) {
+        ESP_LOGW(TAG, "No network — keeping existing images");
         return false;
     }
+
+    // Delete old images
+    for (int i = 1; i <= ALBUM_MAX_IMAGES; i++) {
+        char p[64]; snprintf(p, sizeof(p), "%s/%d.jpg", ALBUM_DIR, i);
+        unlink(p);
+    }
+
+    int ok = 0;
+    for (int i = 1; i <= ALBUM_MAX_IMAGES; i++) {
+        if (download_one(i)) ok++; else break;
+    }
+
+    if (ok == 0) {
+        ESP_LOGE(TAG, "All downloads failed");
+        return false;
+    }
+
+    int today = get_today();
+    if (today > 0) write_index_date(today);
+    ESP_LOGI(TAG, "Updated: %d images, date=%d", ok, today);
+    return true;
+}
+
+// ── Load & display ──────────────────────────────────────────
+
+bool AlbumApp::load_and_show(int index)
+{
+    if (index < 1) return false;
+
+    char path[64];
+    snprintf(path, sizeof(path), "%s/%d.jpg", ALBUM_DIR, index);
+
+    sd_card_lock(UINT32_MAX);
+    FILE* f = fopen(path, "r");
+    if (!f) { sd_card_unlock(); return false; }
 
     fseek(f, 0, SEEK_END);
-    long len = ftell(f);
+    long flen = ftell(f);
     fseek(f, 0, SEEK_SET);
+    if (flen <= 0 || flen > 2 * 1024 * 1024) { fclose(f); sd_card_unlock(); return false; }
 
-    if (len <= 0 || len > 1024 * 1024) {  // sanity cap: 1 MB
-        fclose(f);
-        sd_card_unlock();
-        return false;
-    }
+    uint8_t* jpeg = (uint8_t*)malloc((size_t)flen);
+    if (!jpeg) { fclose(f); sd_card_unlock(); return false; }
 
-    uint8_t* buf = (uint8_t*)malloc((size_t)len);
-    if (!buf) {
-        ESP_LOGE(TAG, "cache_load: OOM (%ld bytes)", len);
-        fclose(f);
-        sd_card_unlock();
-        return false;
-    }
-
-    size_t got = fread(buf, 1, (size_t)len, f);
+    size_t got = fread(jpeg, 1, (size_t)flen, f);
     fclose(f);
     sd_card_unlock();
 
-    if (got != (size_t)len) {
-        ESP_LOGW(TAG, "cache_load: short read %zu/%ld", got, len);
-        free(buf);
-        return false;
+    if (got != (size_t)flen || got < 2 || jpeg[0] != 0xFF || jpeg[1] != 0xD8) {
+        free(jpeg); return false;
     }
 
-    // Validate JPEG magic (FF D8)
-    if (len < 2 || buf[0] != 0xFF || buf[1] != 0xD8) {
-        ESP_LOGW(TAG, "cache_load: not a valid JPEG (magic=0x%02X%02X)",
-                 len >= 2 ? buf[0] : 0, len >= 2 ? buf[1] : 0);
-        free(buf);
-        return false;
-    }
+    if (_img_buf) { free(_img_buf); _img_buf = nullptr; }
+    // _decoded_buf is freed + set to null inside decode_and_render()
+    _decoded_buf = nullptr;
+    _img_buf = jpeg;
+    _img_len = (size_t)flen;
 
-    // Set JPEG buffer — render() will decode it
-    _img_buf = buf;
-    _img_len = (size_t)len;
+    ESP_LOGI(TAG, "[LOAD] image %d", index);
+    return decode_and_render(_img_buf, _img_len);
+}
 
-    ESP_LOGI(TAG, "JPEG loaded from SD: %zu bytes", _img_len);
+bool AlbumApp::decode_and_render(const uint8_t* jpeg, size_t len)
+{
+    if (_decoded_buf) { free(_decoded_buf); _decoded_buf = nullptr; }
+
+    uint32_t t0 = esp_timer_get_time() / 1000;
+
+    bool ok = decode_jpeg(jpeg, len, &_decoded_buf, &_decoded_sw, &_decoded_sh,
+                           &_decoded_crop_x, &_decoded_out_y);
+    if (!ok) return false;
+
+    uint32_t t1 = esp_timer_get_time() / 1000;
+    filter_and_display(_decoded_buf, _decoded_sw, _decoded_sh,
+                        _decoded_crop_x, _decoded_out_y);
+    uint32_t t2 = esp_timer_get_time() / 1000;
+
+    if (_img_buf) { free(_img_buf); _img_buf = nullptr; _img_len = 0; }
+
+    pc_hal_epd_refresh();
+    uint32_t t3 = esp_timer_get_time() / 1000;
+
+    ESP_LOGI(TAG, "Image: decode %dms filter %dms epd %dms",
+             (int)(t1 - t0), (int)(t2 - t1), (int)(t3 - t2));
     return true;
 }
 
-// ── Lifecycle ────────────────────────────────────────────────
+// ── Navigation ──────────────────────────────────────────────
 
-bool AlbumApp::init() {
-    _img_buf = nullptr; _img_len = 0;
-    _decoded_buf = nullptr; _decoded_sw = _decoded_sh = 0;
-    _decoded_crop_x = _decoded_out_y = 0;
-    _filter_idx = 1;  // default: Floyd-Steinberg
-    _sd_mounted = false;
+void AlbumApp::show_next(void)
+{
+    if (_total_images == 0) return;
+    _current_idx = (_current_idx % _total_images) + 1;
+    _last_slide_ms = esp_timer_get_time() / 1000;
+    load_and_show(_current_idx);
+}
+
+void AlbumApp::show_prev(void)
+{
+    if (_total_images == 0) return;
+    _current_idx = (_current_idx > 1) ? _current_idx - 1 : _total_images;
+    _last_slide_ms = esp_timer_get_time() / 1000;
+    load_and_show(_current_idx);
+}
+
+void AlbumApp::check_auto_advance(void)
+{
+    if (_total_images < 2) return;
+    uint64_t now_ms = esp_timer_get_time() / 1000;
+    if (now_ms - _last_slide_ms >= SLIDE_INTERVAL_MS) {
+        ESP_LOGI(TAG, "Auto-advance");
+        show_next();
+    }
+}
+
+void AlbumApp::check_daily_update(void)
+{
+    uint64_t now_ms = esp_timer_get_time() / 1000;
+    if (now_ms - _last_date_check_ms < CHECK_INTERVAL_MS) return;
+    _last_date_check_ms = now_ms;
+
+    int today = get_today();
+    if (today == 0) return;  // no RTC
+
+    if (today > _last_update_date) {
+        ESP_LOGI(TAG, "New day (%d > %d), updating images...", today, _last_update_date);
+        if (update_images()) {
+            _total_images = scan_folder_images();
+            _last_update_date = today;
+            if (_total_images > 0) {
+                _current_idx = 1;
+                load_and_show(_current_idx);
+                _last_slide_ms = esp_timer_get_time() / 1000;
+            }
+        } else {
+            ESP_LOGW(TAG, "Update failed, using existing images");
+        }
+    }
+}
+
+// ── No-SD mode: fetch 1 image, display immediately ─────────
+
+bool AlbumApp::fetch_and_show_one(void)
+{
+    led_async_breath_forever(255, 165, 0);  // orange: WiFi
+
+    if (!wifi_ensure_connected()) {
+        ESP_LOGE(TAG, "No WiFi — can't fetch image");
+        led_async_flash(255, 0, 0, 3);      // red
+        return false;
+    }
+
+    led_async_breath_forever(0, 0, 255);    // blue: HTTP
+
+    uint8_t* jpeg = nullptr;
+    size_t len = 0;
+    if (!http_fetch_one("https://bing.img.run/rand_1366x768.php", &jpeg, &len)) {
+        ESP_LOGE(TAG, "HTTP fetch failed");
+        led_async_flash(255, 0, 0, 3);
+        return false;
+    }
+
+    led_async_flash(0, 255, 0, 3);          // green: decode
+
+    bool ok = decode_and_render(jpeg, len);
+    free(jpeg);
+    if (ok) _last_slide_ms = esp_timer_get_time() / 1000;
+    return ok;
+}
+
+// ── Lifecycle ───────────────────────────────────────────────
+
+bool AlbumApp::init()
+{
+    _current_idx = 1;
+    _total_images = 0;
+    _last_slide_ms = 0;
+    _last_date_check_ms = 0;
+    _filter_idx = 1;
+    _img_buf = nullptr;
+    _decoded_buf = nullptr;
 
     wifi_mgr_init();
     led_init(); led_async_start();
 
-    // Try to mount SD card (non-fatal if absent)
     _sd_mounted = sd_card_mount();
+
     if (!_sd_mounted) {
-        ESP_LOGW(TAG, "SD card not available — cache disabled");
+        ESP_LOGI(TAG, "No SD card — single-image mode");
+        fetch_and_show_one();
+        return true;
     }
+
+    // ── SD mode: 10-image slideshow ──
+    ensure_album_folder();
+
+    _last_update_date = read_index_date();
+    _total_images = scan_folder_images();
+    ESP_LOGI(TAG, "Last update: %d, images: %d", _last_update_date, _total_images);
+
+    // Download if no images at all
+    if (_total_images == 0) {
+        ESP_LOGI(TAG, "No images, downloading 10...");
+        if (update_images()) {
+            _total_images = scan_folder_images();
+            _last_update_date = get_today();
+        }
+    }
+
+    if (_total_images > 0) {
+        _current_idx = 1;
+        load_and_show(_current_idx);
+        _last_slide_ms = esp_timer_get_time() / 1000;
+    } else {
+        g_canvas->fillScreen(TFT_WHITE);
+        g_canvas->setTextColor(TFT_RED);
+        g_canvas->setFont(&fonts::Font4);
+        g_canvas->drawString("No Images", (400 - 140) / 2, 600 / 2 - 14);
+        pc_hal_epd_refresh();
+    }
+
+    _last_date_check_ms = esp_timer_get_time() / 1000;
     return true;
 }
 
 void AlbumApp::deinit()
 {
     _running = false;
-    if (_img_buf) { free(_img_buf); _img_buf = nullptr; _img_len = 0; }
+    if (_img_buf) { free(_img_buf); _img_buf = nullptr; }
     if (_decoded_buf) { free(_decoded_buf); _decoded_buf = nullptr; }
-    if (_sd_mounted) {
-        sd_card_unmount();
-        _sd_mounted = false;
-    }
+    if (_sd_mounted) { sd_card_unmount(); _sd_mounted = false; }
 }
 
-void AlbumApp::start() { _running = true; _needs_refresh = true; }
+void AlbumApp::start() { _running = true; }
 void AlbumApp::stop()  { _running = false; }
 void AlbumApp::refresh() { _needs_refresh = true; }
 
@@ -472,200 +601,45 @@ void AlbumApp::update()
 {
     if (!_running) return;
 
-    if (_needs_refresh) {
-        _needs_refresh = false;
-        _needs_rerender = false;
-        if (_decoded_buf) { free(_decoded_buf); _decoded_buf = nullptr; }
-        ESP_LOGI(TAG, "--- Refresh triggered ---");
-
-        // ── Try SD cache first (load JPEG, decode locally) ──
-        if (cache_load()) {
-            render();
-            return;
+    if (_sd_mounted) {
+        check_auto_advance();
+        check_daily_update();
+    } else {
+        // No-SD: every 30 min, fetch a new image
+        uint64_t now_ms = esp_timer_get_time() / 1000;
+        if (now_ms - _last_slide_ms >= SLIDE_INTERVAL_MS) {
+            _last_slide_ms = now_ms;
+            fetch_and_show_one();
         }
-
-        // ── Fall back to HTTP ──
-        bool ok = false;
-
-        led_async_breath_forever(255, 165, 0);   // orange → WiFi
-        uint32_t t_wifi = esp_timer_get_time() / 1000;
-
-        if (wifi_connect()) {
-            uint32_t t_fetch = esp_timer_get_time() / 1000;
-            ESP_LOGI(TAG, "WiFi OK (%dms), starting HTTP fetch", (int)(t_fetch - t_wifi));
-
-            led_async_breath_forever(0, 0, 255); // blue → HTTP
-            if (_img_buf) { free(_img_buf); _img_buf = nullptr; _img_len = 0; }
-            ok = http_fetch_image(IMAGE_URL, &_img_buf, &_img_len);
-
-            uint32_t t_done = esp_timer_get_time() / 1000;
-            ESP_LOGI(TAG, "HTTP fetch %s (%dms)",
-                     ok ? "SUCCESS" : "FAILED",
-                     (int)(t_done - t_fetch));
-        } else {
-            ESP_LOGE(TAG, "WiFi FAILED — skipping HTTP fetch");
-        }
-
-        if (ok) {
-            // Save the new JPEG to SD card cache for next boot
-            cache_save(_img_buf, _img_len);
-
-            led_async_flash(0, 255, 0, 3);       // green 3×: ready to render
-            render();
-        } else {
-            led_async_flash(255, 0, 0, 3);       // red 3×
-        }
-    } else if (_needs_rerender && _decoded_buf) {
-        _needs_rerender = false;
-        ESP_LOGI(TAG, "--- Filter switch ---");
-        render();
     }
     handle_buttons();
 }
 
-void AlbumApp::render()
-{
-    const int w = g_canvas->width();
-    const int h = g_canvas->height();
-
-    if (_img_buf || _decoded_buf) {
-        uint32_t t0 = esp_timer_get_time() / 1000;
-
-        g_canvas->fillScreen(TFT_WHITE);
-        bool ok = false;
-
-        // Step 1: decode JPEG → RGB565_BE if not cached
-        if (_img_buf && !_decoded_buf) {
-            jpeg_dec_handle_t jdec = NULL;
-            jpeg_dec_config_t cfg = DEFAULT_JPEG_DEC_CONFIG();
-            cfg.output_type = JPEG_PIXEL_FORMAT_RGB565_BE;
-
-            jpeg_dec_header_info_t hdr = {};
-            {
-                jpeg_dec_io_t io = {}; io.inbuf = _img_buf; io.inbuf_len = (int)_img_len;
-                bool ok_header = false;
-                if (jpeg_dec_open(&cfg, &jdec) == JPEG_ERR_OK) {
-                    ok_header = (jpeg_dec_parse_header(jdec, &io, &hdr) == JPEG_ERR_OK);
-                    jpeg_dec_close(jdec); jdec = NULL;
-                }
-                if (!ok_header) { ok = false; goto render_done; }
-            }
-
-            int sh = 400;
-            int sw = (hdr.width * sh + hdr.height / 2) / hdr.height;
-            sw = ((sw + 4) / 8) * 8;
-            if (sw < w) sw = w;
-            int crop_x = (sw > w) ? (sw - w) / 2 : 0;
-            int out_y  = (h - sh) / 2;
-
-            cfg.scale.width = sw;
-            cfg.scale.height = sh;
-            if (jpeg_dec_open(&cfg, &jdec) == JPEG_ERR_OK) {
-                jpeg_dec_io_t io = {}; io.inbuf = _img_buf; io.inbuf_len = (int)_img_len;
-                jpeg_dec_parse_header(jdec, &io, &hdr);
-                int out_len = 0;
-                jpeg_dec_get_outbuf_len(jdec, &out_len);
-                if (out_len > 0) {
-                    uint8_t* out = (uint8_t*)jpeg_calloc_align(out_len, 16);
-                    if (out) {
-                        io.outbuf = out; io.out_size = out_len;
-                        if (jpeg_dec_process(jdec, &io) == JPEG_ERR_OK) {
-                            _decoded_buf = out;
-                            _decoded_sw = sw;
-                            _decoded_sh = sh;
-                            _decoded_crop_x = crop_x;
-                            _decoded_out_y = out_y;
-                            ok = true;
-                        } else {
-                            jpeg_free_align(out);
-                        }
-                    }
-                }
-                jpeg_dec_close(jdec);
-            }
-            if (_img_buf) { free(_img_buf); _img_buf = nullptr; _img_len = 0; }
-        } else if (_decoded_buf) {
-            ok = true;
-        }
-
-render_done:
-        // Step 2: apply filter → push to canvas
-        if (ok && _decoded_buf) {
-            const filter_t* f = &FILTERS[_filter_idx];
-            if (f->fn) {
-                uint8_t* dithered = (uint8_t*)malloc(w * h);
-                if (dithered) {
-                    int sw = _decoded_sw;
-                    const uint16_t* src = (const uint16_t*)_decoded_buf
-                                          + _decoded_out_y * sw + _decoded_crop_x;
-                    uint16_t* crop = (uint16_t*)malloc(w * h * 2);
-                    if (crop) {
-                        for (int y = 0; y < h; y++)
-                            memcpy(crop + y * w, src + y * sw, w * 2);
-                        f->fn(crop, dithered, w, h);
-                        g_canvas->pushImage(0, 0, w, h, dithered);
-                        free(crop);
-                    }
-                    free(dithered);
-                }
-            } else {
-                int sw = _decoded_sw;
-                const uint16_t* src = (const uint16_t*)_decoded_buf
-                                      + _decoded_out_y * sw + _decoded_crop_x;
-                for (int y = 0; y < h; y++)
-                    g_canvas->pushImage(0, y, w, 1, src + y * sw);
-            }
-        }
-
-        // Fallback
-        if (!ok && _img_buf) {
-            ESP_LOGW(TAG, "trying M5GFX drawJpg fallback...");
-            M5Canvas tmp(g_canvas);
-            tmp.setColorDepth(16);
-            if (tmp.createSprite(w, h)) {
-                ok = tmp.drawJpg(_img_buf, _img_len, 0, 0, w, h, 0, 0, 1.0f);
-                if (ok) tmp.pushSprite(g_canvas, 0, 0);
-                tmp.deleteSprite();
-            }
-        }
-
-        uint32_t t1 = esp_timer_get_time() / 1000;
-        ESP_LOGI(TAG, "filter[%s]: %s (%dms)",
-                 FILTERS[_filter_idx].name,
-                 ok ? "OK" : "FAIL",
-                 (int)(t1 - t0));
-        if (!ok) {
-            g_canvas->setTextColor(TFT_RED);
-            g_canvas->setFont(&fonts::Font4);
-            g_canvas->drawString("Decode Failed", (w - 140) / 2, h / 2 - 14);
-            ESP_LOGE(TAG, "all decode attempts failed");
-        }
-    } else {
-        g_canvas->fillScreen(TFT_BLACK);
-        g_canvas->setTextColor(TFT_WHITE);
-        g_canvas->setFont(&fonts::Font4);
-        g_canvas->drawString("Load Failed", (w-160)/2, h/2-14);
-    }
-
-    uint32_t t2 = esp_timer_get_time() / 1000;
-    pc_hal_epd_refresh();
-    uint32_t t3 = esp_timer_get_time() / 1000;
-    ESP_LOGI(TAG, "display: pushed to EPD (%dms)", (int)(t3 - t2));
-}
+// ── Buttons ─────────────────────────────────────────────────
 
 void AlbumApp::handle_buttons()
 {
-    if (BTN_TOP.wasClicked()) {          // Top button → refresh image
-        ESP_LOGI(TAG, "BTN_TOP: refresh");
-        _needs_refresh = true;
-    }
-    if (BTN_TOP.wasHold()) {             // Long press → provisioning
-        ESP_LOGI(TAG, "BTN_TOP hold: provisioning");
-        wifi_mgr_trigger_provisioning();
-    }
-    if (BTN_UP.wasClicked()) {           // UP → cycle filter
-        _filter_idx = (_filter_idx + 1) % FILTER_COUNT;
-        ESP_LOGI(TAG, "Filter: %s", FILTERS[_filter_idx].name);
-        if (_decoded_buf) _needs_rerender = true;
+    if (_sd_mounted) {
+        // SD mode: slideshow with prev/next
+        if (BTN_UP.wasClicked()) { show_prev(); }
+        if (BTN_DOWN.wasClicked()) { show_next(); }
+        if (BTN_TOP.wasHold()) {
+            ESP_LOGI(TAG, "TOP hold: re-download 10 images");
+            if (update_images()) {
+                _total_images = scan_folder_images();
+                _last_update_date = get_today();
+                if (_total_images > 0) {
+                    _current_idx = 1;
+                    load_and_show(_current_idx);
+                    _last_slide_ms = esp_timer_get_time() / 1000;
+                }
+            }
+        }
+    } else {
+        // No-SD mode: single image, TOP refreshes
+        if (BTN_TOP.wasHold()) {
+            ESP_LOGI(TAG, "TOP hold: refresh 1 image");
+            fetch_and_show_one();
+        }
     }
 }
