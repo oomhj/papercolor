@@ -151,13 +151,14 @@ void pc_hal_display(void)
     }
 }
 
-void pc_hal_epd_refresh(void)
+void pc_hal_epd_refresh(bool fast)
 {
     if (!g_canvas) return;
     if (!spi_bus_claim(SPI_OWNER_EPD, UINT32_MAX)) {
         ESP_LOGE(TAG, "EPD claim failed — display skipped");
         return;
     }
+    M5.Display.setEpdMode(fast ? epd_mode_t::epd_fastest : epd_mode_t::epd_quality);
     g_canvas->pushSprite(0, 0);
     M5.Display.display();
     spi_bus_release();

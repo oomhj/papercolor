@@ -537,7 +537,7 @@ bool AlbumApp::decode_and_render(const uint8_t* jpeg, size_t len)
 
     if (_img_buf) { free(_img_buf); _img_buf = nullptr; _img_len = 0; }
 
-    pc_hal_epd_refresh();
+    pc_hal_epd_refresh(false);  // quality mode for photos
     uint32_t t3 = esp_timer_get_time() / 1000;
 
     ESP_LOGI(TAG, "Image: decode %dms filter %dms epd %dms",

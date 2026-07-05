@@ -50,10 +50,10 @@ void pc_hal_display(void);
  * @brief Push canvas to EPD AND trigger display refresh,
  *        wrapped with SPI bus claim/release for safe coexistence with SD card.
  *        Blocks until the SPI bus is available.
- *        Call this instead of manual pushSprite + display sequences
- *        when SD card might be active concurrently.
+ * @param fast  true = epd_fastest (~500ms, ghosting possible)
+ *              false = epd_quality (~1500ms, best image)
  */
-void pc_hal_epd_refresh(void);
+void pc_hal_epd_refresh(bool fast);
 
 // ── Power Management (M5PM1) ─────────────────────────────────
 
