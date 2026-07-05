@@ -9,6 +9,25 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 1.1.1
+  espressif/esp_new_jpeg:
+    component_hash: e1e7e6991193c41ed6c9fc386702aa7821433319e7aa9c3147cd3236310cd69c
+    dependencies: []
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    targets:
+    - esp32
+    - esp32s2
+    - esp32s3
+    - esp32s31
+    - esp32p4
+    - esp32c2
+    - esp32c3
+    - esp32c5
+    - esp32c6
+    - esp32c61
+    - esp32h4
+    version: 1.0.2
   espressif/i2c_bus:
     component_hash: 483112c1619c54c38d0b734fb25f1678733267858a77b7af2f48cc7db6dbbd84
     dependencies:
@@ -49,9 +68,10 @@ dependencies:
       type: service
     version: 1.0.7
 direct_dependencies:
+- espressif/esp_new_jpeg
 - idf
 - m5stack/m5gfx
 - m5stack/m5pm1
-manifest_hash: 67642b979887dc58f12dfb0a7186a90680cb5a18810ef884aac59ab9128f0965
+manifest_hash: 844debe82cf43165501704c501d1851532eddce4300d2c1449f07abfd77c9557
 target: esp32s3
 version: 2.0.0

@@ -2,7 +2,8 @@
  * PaperColor — SD Card HAL Implementation
  *
  * Uses sdspi (SPI mode) on SPI2_HOST, sharing the bus with the EPD.
- * Power switching and card detection are handled via the M5PM1 GPIO expander.
+ * Power and card detection are handled via the M5PM1 GPIO expander.
+ * SPI bus arbitration via spi_bus.h prevents conflicts with EPD.
  */
 
 #include "sd_card.h"
@@ -13,103 +14,89 @@
 #include <esp_vfs_fat.h>
 #include <sdmmc_cmd.h>
 #include <driver/sdspi_host.h>
-
+#include <driver/spi_common.h>
+#include <M5Unified.hpp>
 #include <M5PM1.h>
-extern M5PM1* s_pmu;  // shared PMU instance (initialized in hal.cpp)
+extern M5PM1* s_pmu;  // shared PMU from hal.cpp
 
 static const char* TAG = "SDCard";
 
-// Pin SD_CS from shared SPI bus HAL. MOSI/MISO/CLK are on SPI_HOST.
-#define SD_CS       SPI_PIN_SD_CS
+// ── Pin definitions ──────────────────────────────────────────
+// Matches hardware doc: microSD shares SPI2_HOST with EPD
+#define SD_CS       GPIO_NUM_47
+#define SD_MOSI     GPIO_NUM_13
+#define SD_MISO     GPIO_NUM_14
+#define SD_CLK      GPIO_NUM_15
 
-// M5PM1 GPIO mapping (see docs/hardware/pin-mapping.md)
-//   PYG1 → CARD_DEC  (card detect, input, active low)
-//   PYG3 → PY_SD_PWR_EN  (SD power, output)
-//   PYG4 → PY_SD_DET_EN  (SD detect pull-up enable, must be HIGH)
-#define SD_PWR_PMU     M5PM1_GPIO_NUM_3
-#define SD_DET_PMU     M5PM1_GPIO_NUM_1
-#define SD_DET_EN_PMU  M5PM1_GPIO_NUM_4
+// M5PM1 GPIO mapping (pins configured in pc_hal_init)
+#define SD_DET_PMU  M5PM1_GPIO_NUM_1   // PYG1 → CARD_DEC (card detect, active-low)
 
 // ── State ────────────────────────────────────────────────────
 
 static bool s_mounted = false;
 static sdmmc_card_t* s_card = NULL;
 
-// ── Power control (M5PM1 via shared instance) ────────────────
-
-static void sd_power(bool on)
-{
-    s_pmu->pinMode(SD_PWR_PMU, M5PM1_GPIO_MODE_OUTPUT);
-    s_pmu->digitalWrite(SD_PWR_PMU, on ? HIGH : LOW);
-    vTaskDelay(pdMS_TO_TICKS(50));
-}
+// ── Card detect ──────────────────────────────────────────────
+// Pins already configured in pc_hal_init() — just read.
 
 static bool sd_detect(void)
 {
-    // Enable detect circuit: PYG4 = PY_SD_DET_EN
-    s_pmu->pinMode(SD_DET_EN_PMU, M5PM1_GPIO_MODE_OUTPUT);
-    s_pmu->digitalWrite(SD_DET_EN_PMU, HIGH);
-    vTaskDelay(pdMS_TO_TICKS(5));
-    // Read card detect: PYG1 = CARD_DEC, active-low
-    s_pmu->pinMode(SD_DET_PMU, M5PM1_GPIO_MODE_INPUT);
+    if (!s_pmu) { return false; }
     bool present = (s_pmu->digitalRead(SD_DET_PMU) == LOW);
     ESP_LOGI(TAG, "card detect: %s", present ? "present" : "absent");
     return present;
 }
 
-// ── Public API ───────────────────────────────────────────────
+// ── Public API ──────────────────────────────────────────────
 
 bool sd_card_mount(void)
 {
     if (s_mounted) return true;
 
-    if (!sd_detect()) {
-        ESP_LOGW(TAG, "no card detected");
+    sd_detect();  // log only, try mount regardless
+
+    // SPI bus already initialized by M5GFX — just claim it for the SD mount
+    if (!spi_bus_claim(SPI_OWNER_SD, pdMS_TO_TICKS(5000))) {
+        ESP_LOGE(TAG, "Could not acquire SPI bus for SD mount");
         return false;
     }
 
-    // Power on
-    sd_power(true);
-    vTaskDelay(pdMS_TO_TICKS(50));
+    // Try mount at descending frequencies (like the demo)
+    int freqs[] = {20000, 10000, 4000};
+    bool ok = false;
+    for (int fi = 0; fi < 3; fi++) {
+        sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+        host.max_freq_khz = freqs[fi];
 
-    // Acquire bus (forces EPD_CS HIGH, barrier delay)
-    spi_bus_acquire(SPI_OWNER_SD);
+        sdspi_device_config_t dev_cfg = SDSPI_DEVICE_CONFIG_DEFAULT();
+        dev_cfg.host_id = SPI2_HOST;
+        dev_cfg.gpio_cs = SD_CS;
 
-    // Configure sdspi device
-    sdspi_device_config_t dev_cfg = SDSPI_DEVICE_CONFIG_DEFAULT();
-    dev_cfg.host_id   = SPI_HOST;
-    dev_cfg.gpio_cs   = SD_CS;
+        esp_vfs_fat_sdmmc_mount_config_t mount_cfg = {
+            .format_if_mount_failed = false,
+            .max_files = 4,
+            .allocation_unit_size = 16 * 1024,
+            .disk_status_check_enable = false,
+            .use_one_fat = false,
+        };
 
-    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-    host.slot = SPI_HOST;
-    host.max_freq_khz = 8000;  // 8MHz — conservative for shared bus
-
-    esp_vfs_fat_sdmmc_mount_config_t mount_cfg = {
-        .format_if_mount_failed = false,
-        .max_files              = 4,
-        .allocation_unit_size   = 16 * 1024,
-        .disk_status_check_enable = false,
-        .use_one_fat            = false,
-    };
-
-    esp_err_t e = esp_vfs_fat_sdspi_mount("/sd", &host, &dev_cfg, &mount_cfg, &s_card);
-    if (e != ESP_OK) {
-        ESP_LOGE(TAG, "mount failed: %s", esp_err_to_name(e));
-        spi_bus_release();
-        sd_power(false);
-        return false;
+        esp_err_t e = esp_vfs_fat_sdspi_mount("/sd", &host, &dev_cfg, &mount_cfg, &s_card);
+        if (e == ESP_OK) {
+            s_mounted = true;
+            ok = true;
+            ESP_LOGI(TAG, "mounted @ %d KHz", freqs[fi]);
+            sdmmc_card_print_info(stdout, s_card);
+            break;
+        }
+        ESP_LOGW(TAG, "mount @ %d KHz failed: %s", freqs[fi], esp_err_to_name(e));
     }
 
-    spi_bus_release();
-    s_mounted = true;
-    ESP_LOGI(TAG, "mounted, size=%lluMB, speed=%uMHz",
-             (unsigned long long)(s_card->csd.capacity * s_card->csd.sector_size) / (1024 * 1024),
-             host.max_freq_khz / 1000);
+    spi_bus_release();  // bus free for EPD after mount
 
-    // Determine card type from CSD structure
-    const char* type = (s_card->csd.capacity == 0) ? "SDSC" : "SDHC/SDXC";
-    ESP_LOGI(TAG, "card type: %s", type);
-
+    if (!ok) {
+        ESP_LOGE(TAG, "SD mount failed at all frequencies");
+        return false;
+    }
     return true;
 }
 
@@ -117,16 +104,12 @@ void sd_card_unmount(void)
 {
     if (!s_mounted) return;
 
-    spi_bus_acquire(SPI_OWNER_SD);
-
-    // Flush and unmount
+    spi_bus_claim(SPI_OWNER_SD, portMAX_DELAY);
     esp_vfs_fat_sdcard_unmount("/sd", s_card);
     s_card = NULL;
     s_mounted = false;
-
-    // Power off
-    sd_power(false);
     spi_bus_release();
+
     ESP_LOGI(TAG, "unmounted");
 }
 
@@ -138,4 +121,14 @@ bool sd_card_detect(void)
 bool sd_card_mounted(void)
 {
     return s_mounted;
+}
+
+bool sd_card_lock(uint32_t timeout_ms)
+{
+    return spi_bus_claim(SPI_OWNER_SD, timeout_ms);
+}
+
+void sd_card_unlock(void)
+{
+    spi_bus_release();
 }

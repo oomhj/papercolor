@@ -9,10 +9,10 @@
 #include <cstdint>
 #include <M5Unified.hpp>
 #include <M5GFX.h>
+#include "spi_bus.h"
 #include <M5PM1.h>
 
 #include "button.h"
-#include "spi_bus.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -45,6 +45,15 @@ extern M5Canvas* g_canvas;
  * @brief Push the off-screen canvas to the EPD and trigger refresh.
  */
 void pc_hal_display(void);
+
+/**
+ * @brief Push canvas to EPD AND trigger display refresh,
+ *        wrapped with SPI bus claim/release for safe coexistence with SD card.
+ *        Blocks until the SPI bus is available.
+ *        Call this instead of manual pushSprite + display sequences
+ *        when SD card might be active concurrently.
+ */
+void pc_hal_epd_refresh(void);
 
 // ── Power Management (M5PM1) ─────────────────────────────────
 

@@ -1,6 +1,8 @@
-# 热点图片新闻 — 设计方案
+# 热点图片新闻 — 设计方案与实现
 
-在 PaperColor 墨水屏上轮播热点新闻，支持图片+标题显示。
+在 PaperColor 墨水屏上轮播热点新闻，支持标题显示和按键翻页。
+
+> 📌 当前实现：**P0**（RSS 标题文本显示）
 
 ---
 
@@ -8,278 +10,236 @@
 
 ```
 ┌──────────────┐     HTTP/TLS      ┌───────────────────┐
-│   News API   │ ◄──────────────►  │  PaperColor       │
+│  RSS Feed    │ ◄──────────────►  │  PaperColor       │
 │  (云端)      │                   │  ┌─────────────┐  │
-│              │                   │  │ news_app     │  │
-│ • Bing 每日  │                   │  │  ├ fetcher   │  │
-│ • NewsAPI    │                   │  │  ├ parser    │  │
-│ • RSS 聚合   │                   │  │  └ renderer  │  │
-│ • 自建服务   │                   │  │  hal_wifi    │  │
+│              │                   │  │ news_app    │  │
+│ • 少数派sspai│                   │  │  ├ fetcher  │  │
+│ • 可扩展     │                   │  │  ├ parser   │  │
+│              │                   │  │  └ render   │  │
 └──────────────┘                   │  └─────────────┘  │
                                    └───────────────────┘
 ```
 
-## 二、数据源方案
+## 二、数据源
 
-### 方案 A：Bing 每日一图（推荐首选）
+### 当前（P0）：RSS Feed（少数派 sspai）
 
-| 项目 | 内容 |
-|------|------|
-| API | `https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1&mkt=zh-CN` |
-| 格式 | JSON |
-| 返回 | 图片 URL + 标题 + 版权说明 |
-| 费用 | 免费，无需 API Key |
-| 图片 | 1920x1080 JPEG，约 200-500KB |
-| 局限 | 每天一张，不含"热点新闻" |
+```c
+static const char* RSS_URLS[] = {
+    "https://sspai.com/feed",
+};
+```
 
-### 方案 B：NewsAPI
+- RSS 2.0 XML 格式
+- 无需 API Key，完全免费
+- 自动获取标题 + 摘要 + 发布日期
 
-| 项目 | 内容 |
-|------|------|
-| API | `https://newsapi.org/v2/top-headlines?country=cn&apiKey=KEY` |
-| 格式 | JSON |
-| 返回 | 标题、描述、来源、图片 URL |
-| 费用 | 免费版 100 req/day |
-| 需要 | API Key（免费注册） |
+### 可选源
 
-### 方案 C：RSS 聚合
-
-| 项目 | 内容 |
-|------|------|
-| 源 | 新浪新闻、BBC、Reuters 等 RSS feed |
-| 格式 | XML (RSS/Atom) |
-| 处理 | 解析 XML 提取标题+链接 |
-| 需要 | 简单的 XML 解析器（可用 expat 或 minixml） |
-| 优点 | 免费、无限制、无需 API Key |
-
-### 方案 D：GitHub Raw 自建
-
-| 项目 | 内容 |
-|------|------|
-| 方式 | 在 GitHub 仓库维护 `news.json`，设备定时拉取 |
-| 格式 | 自定义 JSON（标题+图片URL+日期） |
-| 优点 | 完全可控、内容自定义 |
-| 缺点 | 需要手动更新 |
-
-### 推荐：方案 C（RSS）+ 方案 A（Bing 图片）组合
-
-首次实现先从 **RSS** 获取标题，配合 **Bing 每日一图** 做背景，无需处理第三方 API Key。
+| 数据源 | 格式 | 说明 |
+|--------|------|------|
+| 少数派 sspai | RSS | ✅ 当前使用 |
+| Bing 每日一图 | JSON | 图片 URL + 标题（无"热点"） |
+| NewsAPI | JSON | 需 API Key，100 req/day |
+| GitHub Raw 自建 | JSON | 完全可控 |
 
 ---
 
-## 三、应用结构
-
-### 新模式：`APP_MODE_NEWS`（mode_4）
-
-继承 demo 的模式系统，与 calendar、local_slideshow 平级。
-
-```
-main/apps/news/
-├── news_app.h              # 应用生命周期
-├── news_app.cpp            # 主逻辑
-├── news_fetcher.h          # HTTP 获取接口
-├── news_fetcher.cpp        # esp_http_client 实现
-├── news_parser.h           # RSS/JSON 解析
-├── news_parser.cpp         # 解析实现
-└── news_renderer.h/cpp    # EPD 渲染
-```
-
-### 数据流
-
-```
-定时器到期
-    │
-    ▼
-WiFi 连接 STA
-    │
-    ▼
-news_fetcher 发起 HTTP GET
-    │
-    ▼
-news_parser 解析响应
-    │
-    ▼
-news_renderer 绘制到 Canvas
-    │
-    ▼
-EPD 局部刷新 (epd_fastest)
-    │
-    ▼
-用户按键翻页 / 下一周期更新
-```
-
----
-
-## 四、EPD 显示布局
+## 三、EPD 显示布局
 
 横屏 600×400，每页显示一条新闻：
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│ 🔥  Hot News                          2026-07-03    1/10  ██   │  ← 标题栏
+│  Hot News                          2026-07-03          1/10      │  ← 标题栏 (h=36, 深色背景)
 ├──────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│              ┌──────────────────────┐                            │
-│              │                      │                            │
-│              │   新闻配图区域          │                            │  ← 图片区域
-│              │   (如无图则纯色)       │                            │    280×180
-│              │                      │                            │
-│              └──────────────────────┘                            │
 │                                                                  │
-│  ┌──────────────────────────────────────────────────────┐        │
-│  │  神舟二十号飞船成功发射 搭载三名航天员进入太空         │        │  ← 标题
-│  └──────────────────────────────────────────────────────┘        │
+│             神舟二十号飞船成功发射                                   │  ← 标题 (Font6, 大号)
+│             搭载三名航天员进入太空                                  │
 │                                                                  │
-│  来源: 新华社  |  2小时前                                        │  ← 元信息
 │                                                                  │
-│  2026年7月3日，神舟二十号载人飞船在酒泉卫星发射中心...           │  ← 摘要(2行)
+│             新华社  |  2小时前                                    │  ← 来源 (Font2, 灰色)
+│                                                                  │
+│             2026年7月3日，神舟二十号载人飞船                        │  ← 摘要 (Font2, 多行)
+│             在酒泉卫星发射中心...                                   │
+│                                                                  │
+│                                                                  │
+│                                                                  │
 │                                                                  │
 ├──────────────────────────────────────────────────────────────────┤
-│  [A] ◄ Prev    [B] Refresh    [C] Next ►        Auto: 30min    │  ← 底部栏
+│  [A] << Prev    [B] Refresh    [C] Next >>                       │  ← 底部栏 (h=16)
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-### 关键尺寸
+### 设计 vs 实现对比
+
+| 元素 | 设计方案 | 当前实现 (P0) |
+|------|---------|---------------|
+| 图片区域 | 280×180 居中配图 | ❌ 尚未实现（P1 引入） |
+| 标题 | Font4 或 Font6 | ✅ Font6 大号显示 |
+| 来源 + 时间 | Font0 | ✅ Font2 灰色显示 |
+| 摘要 | Font2, 2 行 | ✅ Font2, 最多 5 行 |
+| 底部栏 h=30 | 三个按键 + 自动刷新时间 | ✅ 简化底部栏 h=16 |
+
+### 关键坐标
 
 | 区域 | 位置 | 大小 |
 |------|------|------|
 | 标题栏 | y=0 | h=36 |
-| 图片区 | y=40～290 | 中心 280×180 |
-| 标题文字 | y=300 | 2 行 Font4 |
-| 元信息 | y=340 | Font0 |
-| 摘要 | y=360 | Font2, 2 行 |
-| 底部栏 | y=380 | h=20 |
+| 标题文字 | y=60 | Font6 |
+| 来源 + 日期 | y=130 | Font2 |
+| 摘要 | y=180 | Font2, 每行 ~50 字符, 最多 5 行 |
+| 底部栏 | h-16 | Font0 |
 
 ---
 
-## 五、关键实现细节
+## 四、按键交互
+
+| 按键 | 功能 | 实现 |
+|------|------|------|
+| BTN-A (G10) | 上一条新闻 | `_current_index--` → `render()` |
+| BTN-B (G9) | 手动刷新 | `_needs_refresh = true` |
+| BTN-C (G1) | 下一条新闻 | `_current_index++` → `render()` |
+
+---
+
+## 五、实现细节
 
 ### 5.1 HTTP 获取（news_fetcher.cpp）
 
+- 封装 `esp_http_client_perform()`，自动处理 302 重定向
+- 支持 HTTPS（`esp_crt_bundle_attach`）
+- 动态缓冲区（初始 32KB，自动扩展至 ~2MB）
+- 15s 超时
+
 ```cpp
-// 使用 ESP-IDF esp_http_client
-esp_http_client_config_t cfg = {};
-cfg.url = "https://...";
-cfg.timeout_ms = 15000;
-cfg.buffer_size = 4096;
-
-esp_http_client_handle_t client = esp_http_client_init(&cfg);
-esp_http_client_perform(client);
-
-// 读取响应到内存缓冲区
-char* response = malloc(content_length + 1);
-esp_http_client_read(client, response, content_length);
-response[content_length] = '\0';
+fetch_result_t news_fetch_url(const char* url, uint32_t timeout_ms);
+// 返回: {data: char*, length: size_t, err: esp_err_t}
+// 调用者须 free(data)
 ```
 
 ### 5.2 RSS 解析（news_parser.cpp）
 
-RSS 格式：
-```xml
-<rss>
-  <channel>
-    <item>
-      <title>新闻标题</title>
-      <description>摘要内容</description>
-      <pubDate>发布时间</pubDate>
-      <enclosure url="图片URL" type="image/jpeg"/>
-    </item>
-  </channel>
-</rss>
-```
+简单的标签匹配解析器，适用于标准 RSS 2.0：
 
-解析方案：使用 **ESP-IDF 自带的 expat XML 解析器**，或**简单字符串解析**（RSS 结构固定）。
+- 按 `<item>` / `</item>` 分割条目
+- 提取 `<title>`、`<description>`、`<pubDate>`、`<link>`、`<source>`
+- 自动去除 `<![CDATA[...]]>` 包裹
+- 解码 HTML 实体（`&amp;`、`&lt;`、`&gt;` 等）
+- 标题截断 120 字符，摘要截断 300 字符
 
-### 5.3 图片渲染（news_renderer.cpp）
+### 5.3 渲染（news_app.cpp 内联）
 
-M5GFX 支持直接绘制 PNG/JPEG：
+使用 M5GFX 字体和 Canvas 直接绘制：
 
 ```cpp
-// 从内存绘制 PNG
-g_canvas->drawPng(data, len, x, y, w, h, 0, 0, scale);
+M5.Display.setEpdMode(epd_fastest);  // 快速刷新
+g_canvas->fillScreen(TFT_WHITE);
 
-// 从文件绘制 PNG
-g_canvas->drawPngFile(path, x, y, w, h, 0, 0, scale);
+// 标题栏
+g_canvas->fillRect(0, 0, w, 36, 0x2118);
+g_canvas->setFont(&fonts::Font2);
+g_canvas->drawString("Hot News  2026-07-03", 12, 10);
+
+// 标题
+g_canvas->setFont(&fonts::Font6);
+g_canvas->drawString(item.title, 20, 60);
+
+// 来源
+g_canvas->setFont(&fonts::Font2);
+g_canvas->drawString("来源  |  日期", 20, 130);
+
+// 摘要（自动换行）
+g_canvas->setFont(&fonts::Font2);
+// 每 50 字符换行，最多 5 行
+
+g_canvas->pushSprite(0, 0);
+M5.Display.display();
 ```
 
-图片处理流水线：
-1. HTTP 下载 JPEG → 内存缓冲区
-2. 如有必要缩放至 280×180
-3. 居中绘制到 Canvas
-4. 叠加标题文字
+### 5.4 自动刷新
 
-### 5.4 低功耗策略
+- 定时器：每 30 分钟自动触发 `_needs_refresh`
+- 刷新流程：LED 蓝 → WiFi 连接 → HTTP GET → 解析 → LED 绿 → 渲染
 
-- 使用 `esp_timer` 定时唤醒（默认 30 分钟）
-- 唤醒后：连接 WiFi → 获取数据 → 刷新 EPD → 断开 WiFi → 休眠
-- 借鉴 demo 的 RTC 唤醒逻辑（`scheduleNextWakeMinutes`）
+### 5.5 WiFi 实现（独立，未使用 wifi_manager）
 
-### 5.5 缓存策略
+当前使用 `news_app.cpp` 中独立的 `wifi_connect_sta()`：
 
-- 最后 N 条新闻保存在内存数组（N=50）
-- 离线时显示缓存内容
-- 每次新获取追加到缓存
+```cpp
+// 硬编码 WiFi
+#define NEWS_SSID "Jason-home"
+#define NEWS_PASS "admin1234"
+
+// 直接连接（25s 超时，轮询 ap_info）
+while (deadline) {
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) return true;
+}
+```
+
+### 5.6 缓存
+
+当前无持久缓存，数据保存在内存 `std::vector<NewsItem>` 中（最多 50 条）。
+离线降级显示最后获取的内容，但重启后丢失。
 
 ---
 
-## 六、集成步骤
-
-### 6.1 新增文件
+## 六、文件结构
 
 ```
-main/apps/news/news_app.h
-main/apps/news/news_app.cpp
-main/apps/news/news_fetcher.h
-main/apps/news/news_fetcher.cpp
-main/apps/news/news_parser.h  
-main/apps/news/news_parser.cpp
-main/apps/news/news_renderer.h
-main/apps/news/news_renderer.cpp
+main/apps/news/
+├── news_app.h            # 应用生命周期 + NewsItem 定义
+├── news_app.cpp          # 主逻辑（生命周期、渲染、按键、WiFi）
+├── news_fetcher.h        # HTTP 获取接口
+├── news_fetcher.cpp      # esp_http_client 实现
+├── news_parser.h         # RSS 解析接口
+└── news_parser.cpp       # 标签匹配 RSS 解析器
+
+依赖:
+- hal/hal（硬件抽象）
+- M5GFX（Canvas, Fonts）
+- ESP-IDF: esp_http_client, esp_wifi, nvs_flash, esp-tls, mbedtls, json
 ```
 
-### 6.2 修改文件
+> 设计中规划的 `news_renderer.h/cpp` 尚未创建（P1 图片渲染时引入）。
 
-| 文件 | 修改内容 |
-|------|----------|
-| `hal/hal.h` | 添加 `MODE_ID_NEWS` / `APP_MODE_NEWS` |
-| `hal/hal.cpp` | 更新 `is_supported_mode_id` / `app_mode_from_mode_id` |
-| `app_manager/app_manager.cpp` | 集成 news_app 的 init/start/stop/update |
-| `app_server/app_server.cpp` | 添加 `"NEWS"` 到模式列表 |
-| `CMakeLists.txt` | 添加 news 源文件 |
-| `idf_component.yml` | - 无需新增依赖（esp_http_client 已内置） |
+---
 
-### 6.3 CMakeLists.txt 依赖
+## 七、集成步骤
+
+### 当前已集成
 
 ```cmake
-REQUIRES
+# main/CMakeLists.txt
+idf_component_register(
+    SRCS
+        "main.cpp"
+        "hal/hal.cpp"
+        "apps/news/news_fetcher.cpp"    # ← news 文件
     ...
-    esp_http_client
-    esp-tls
-    json
+)
 ```
 
-> 注意：以上组件已在 demo 的 CMakeLists.txt 中启用，无需额外配置。
+启动方式：将 `main.cpp` 中的 `AlbumApp` 替换为 `NewsApp`。
 
----
+### 规划集成
 
-## 七、实施路线
-
-| 阶段 | 内容 | 时间估计 |
-|------|------|----------|
-| **P0** | RSS 解析 + 标题文本显示 | 1 天 |
-| **P1** | 集成 Bing 每日图片作为背景 | 1 天 |
-| **P2** | 缓存 + 离线浏览 | 0.5 天 |
-| **P3** | 低功耗定时刷新 + RTC 唤醒 | 0.5 天 |
-| **P4** | 多数据源支持（NewsAPI 等） | 1 天 |
-
----
-
-## 八、风险与应对
-
-| 风险 | 影响 | 应对 |
+| 组件 | 状态 | 说明 |
 |------|------|------|
-| RSS 源格式变更 | 解析失败 | 设计容错解析，降级显示纯文本 |
-| 图片过大（>1MB） | OOM | 限制下载大小，丢弃超大图片 |
-| WiFi 连接慢 | 刷新耗时过长 | 超时机制，失败时显示缓存内容 |
-| 多次刷新减损 EPD 寿命 | 硬件损伤 | 最小刷新间隔 5 分钟，仅内容变化时刷新 |
-| HTTPS 证书验证 | 连接失败 | 配置 esp-tls 跳过验证（开发阶段） |
+| hal 模式 ID | 📅 | 如需与 app_manager 配合 |
+| wifi_manager | 📅 | 替代独立 wifi_connect |
+| 图片渲染 | 📅 | P1 引入配图 |
+
+---
+
+## 八、实施路线
+
+| 阶段 | 内容 | 状态 |
+|------|------|------|
+| **P0** | RSS 解析 + 标题文本显示 + 按键翻页 | ✅ 已完成 |
+| **P1** | 集成 Bing 每日图片作为背景 | 📅 |
+| **P2** | 缓存 + 离线浏览 | 📅 |
+| **P3** | 低功耗定时刷新 + RTC 唤醒 | 📅 |
+| **P4** | 多数据源支持 | 📅 |

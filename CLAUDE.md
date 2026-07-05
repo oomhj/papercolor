@@ -2,138 +2,155 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Repository Structure
+## Development Principles
 
-This repo contains **two coexisting projects** for the M5Stack PaperColor:
+- **先沟通，后实现** — 除非用户明确指令，不要直接写代码。先确认需求、理解设计，达成一致后再动手。
+- **设计方案先行** — 复杂功能先输出文档（需求分析、方案对比、架构设计），等用户确认后再编码。
 
-- **Root** (`platformio.ini`, `src/`) — PlatformIO / Arduino-framework scaffold
-- **`m5_demo/`** (`CMakeLists.txt`, `main/`) — Official M5Stack ESP-IDF v5.5 demo (subtree clone)
+## Project Overview
 
-Both target the same hardware. The `include/config.h` pin map is the shared truth source.
+M5Stack PaperColor firmware built with ESP-IDF v5.5. Two coexisting projects in one repo:
 
-## Build Commands
+- **Root** (`CMakeLists.txt`, `main/`) — Active development project with custom apps (album, news)
+- **`m5_demo/`** — Official M5Stack demo (reference only, subtree clone)
 
-### PlatformIO (root)
-```
-pio run                              # Build
-pio run --target upload              # Build + flash
-pio run --target upload --upload-port /dev/ttyUSB0
-pio device monitor                   # 115200 baud
-```
+The `main.cpp` entry point is **application-specific** — currently runs Album. Switch apps by editing `main/main.cpp`.
 
-### Official ESP-IDF Demo (m5_demo/)
-```
-# First time — init submodules + component manager deps
-cd m5_demo
-git -C components/M5GFX     checkout master  2>/dev/null || true
-git -C components/M5Unified checkout master  2>/dev/null || true
-idf.py set-target esp32s3
-idf.py build                             # Build
-idf.py -p /dev/ttyUSB0 flash             # Flash
-idf.py -p /dev/ttyUSB0 monitor           # Serial monitor
-```
+## Build & Flash
 
-> The demo uses ESP-IDF v5.5.1. Submodules (`components/M5GFX`, `components/M5Unified`) and IDF component manager deps (`esp_tinyusb`, `m5pm1`, `qrcode`, `mdns` per `idf_component.yml`) are required. The `m5_demo/devcontainer.json` already references the same `espressif/idf:release-v5.5` image.
+```bash
+# Build (in Docker container)
+docker exec papercolor-build bash -c \
+  ". /opt/esp/idf/export.sh > /dev/null 2>&1 && idf.py build"
 
-## Hardware Architecture
+# Flash (host esptool, port may change: usbmodem1101 / usbmodem2101)
+esptool.py --chip esp32s3 -p /dev/tty.usbmodem1101 -b 460800 \
+  --before default_reset --after hard_reset write_flash \
+  --flash_mode dio --flash_size 16MB --flash_freq 80m \
+  0x0 build/bootloader/bootloader.bin \
+  0x8000 build/partition_table/partition-table.bin \
+  0x10000 build/papercolor_template.bin
 
-### SoC: ESP32-S3R8 (240MHz, 16MB Flash + 8MB Octal PSRAM)
-PSRAM is critical — the EPD framebuffer (`M5Canvas` at 400×600×8bpp ≈ 240KB) lives there. PSRAM is configured as Octal 40MHz with `malloc()` preferring external RAM below 16KB.
-
-### Key Design Rules
-
-1. **EPD power MUST be enabled before display access** via `pmu.setEPDPower(true)` (M5PM1 PYG0 / PY_EPD_EN).
-2. **Audio has two independent power gates**: `PIN_AUDIO_PWR_EN=G45` (ES8311 + ES7210) and `PIN_SPK_EN=G46` (AW8737A speaker amp). Speaker amp defaults OFF.
-3. **EPD + microSD share SPI bus** (CLK=G15, MOSI=G13). Never assert both CS simultaneously — EPD CS=G44, SD CS=G47. SD adds MISO=G14.
-4. **Single I2C bus** (SCL=G2, SDA=G3) for ALL devices: ES8311(0x18), ES7210(0x40), M5PM1(0x6e), RX8130CE(0x32), SHT40(0x44).
-5. **RGB LED is single-wire** (G21, SK6812/WS2812-style). Power switch: M5PM1 LDO3V3_EN_PP. M5Unified's `M5.Led` API drives it.
-6. **Buttons are active-low** with internal pull-up.
-
-### Pin Map (from `include/config.h`)
-
-```
-EPD:   CLK=G15, MOSI=G13, CS=G44, DC=G43, BUSY=G11, RST=G12
-BTN:   A=G10, B=G9, C=G1, PWR=G0
-Audio: MCLK=G42, LRCK=G41, BCLK=G40, DIN=G39, DOUT=G38, PWR_EN=G45, SPK_EN=G46
-SD:    CS=G47, CLK=G15, MOSI=G13, MISO=G14
-I2C:   SCL=G2, SDA=G3
-Other: RGB=G21, IR=G48, RTC_IRQ=G7, Grove G4/G5
+# Serial monitor
+idf.py -p /dev/tty.usbmodem1101 monitor
 ```
 
-### M5PM1 GPIOs
-
-| PMU Pin | Signal | Controls |
-|---------|--------|----------|
-| PYG0 | PY_EPD_EN | EPD power rail |
-| PYG1 | CARD_DEC | SD card detect |
-| PYG2 | RTC_IRQ | RTC wake interrupt |
-| PYG3 | PY_SD_PWR_EN | SD module power |
-| PYG4 | PY_SD_DET_EN | SD detect pull-up |
-
-Power rails: DCDC3V3_EN_PP (3V3_L2), LDO3V3_EN_PP (RGB), BOOST5V_EN_PP (Grove 5V).
-
-### Power Consumption
-- Standby: 92.53 µA • Active: 211.97 mA • Battery: 1250 mAh Li-Po
-
-## ESP-IDF Demo Architecture (m5_demo/main/)
-
-```
-main.cpp                 — Entry: hal.init() → detectWakeSource() → app_manager_start() → app_server_init()
-├── hal/hal{.cpp,.h}     — Central HAL: init, settings (NVS), SHT40, RX8130CE, power-off, wake source
-│   ├── wifi/            — WiFi AP + STA management (ESP-IDF esp_wifi)
-│   ├── storage/         — Dual-media storage: SPIFFS (flash) + FAT (SD) with TinyUSB MSC
-│   ├── ezdata/          — Ezdata cloud photo fetch API
-│   └── utils/
-│       ├── audio/       — Tone/melody generation via M5.Speaker
-│       ├── image/       — PNG decode + image metadata
-│       └── dns_server/  — Captive portal DNS responder
-└── apps/
-    ├── app_manager/     — State machine: mode switching, button/LED handling, low-power logic
-    ├── app_server/      — HTTP config server + captive portal + REST API + index.html
-    ├── local_photo_slideshow/ — SD card photo browsing
-    └── ezdata_photo_push/    — Cloud photo push display
+Build container:
+```bash
+docker run -d --rm --name papercolor-build \
+  -v .:/workspaces/PaperColor -w /workspaces/PaperColor \
+  espressif/idf:release-v5.5 sleep infinity
 ```
 
-### Application Modes
-- **`mode_1` (APP_MODE_LOCAL)**: Browse photos from SD card (or SPI flash fallback). Supports auto-slideshow with configurable interval.
-- **`mode_2` (APP_MODE_EZDATA)**: Fetch and display photos from Ezdata cloud service over Wi-Fi.
+Full build/flash guide: `docs/build-guide.md`
 
-### Low Power / RTC Wake Cycle
-The demo implements a sleep-wake cycle for low-power slideshow:
-1. Normal boot → detect wake source via M5PM1 PYG2 (RTC_IRQ)
-2. If RTC wake: run one-shot refresh (local or ezdata), schedule next wake via RX8130CE, power off
-3. If normal boot: run interactive mode, idle-shutdown after 60s inactivity in low-power mode
-4. `scheduleNextWakeMinutes()` writes interval to RX8130CE RAM, then `pm1.shutdown()`
+## Application Architecture
 
-### Storage
-M5PM1 PYG3 controls SD power. PYG4 enables SD detect pull-up. PYG1 (CARD_DEC) reads card presence.
-The demo uses `hal_storage_switch()` to swap between SPI flash (TinyUSB MSC mode) and SD card.
-
-### Partition Table (m5_demo/partitions.csv)
 ```
-nvs      0x6000
-phy      0x1000
-factory  0x9F0000  (~10MB application)
-storage  0x600000  (6MB FAT — photos)
+main/
+├── main.cpp              — Entry point, picks one app to run
+├── hal/
+│   ├── hal.h/cpp         — pc_hal_* API: init, EPD, battery, SHT40, deep sleep
+│   └── led_driver.h/cpp  — LED control wrapper
+├── apps/
+│   ├── album/            — Network photo album (current main)
+│   │   ├── album_app.h   — Lifecycle: init/deinit/start/stop/update/refresh
+│   │   └── album_app.cpp — WiFi connect + HTTP fetch + JPEG drawJpg() + buttons
+│   ├── news/             — RSS news reader
+│   │   ├── news_app.{h,cpp}    — Lifecycle + main logic
+│   │   ├── news_fetcher.{h,cpp} — HTTP download wrapper
+│   │   └── news_parser.{h,cpp}  — RSS XML tag parser
+│   └── template/         — App lifecycle template (reference)
+└── wifi/
+    ├── wifi_manager.h/cpp         — STA+AP management, NVS config, retry with backoff
+    └── wifi_provisioning.h/cpp    — Captive portal: DNS hijack + HTTP config page
 ```
 
-### Key ESP-IDF Config (m5_demo/sdkconfig.defaults)
-- PSRAM: Octal 40MHz, CLK=G30, CS=G26, `SPIRAM_USE_MALLOC`
-- UART console: TX=G5, RX=G4, secondary USB JTAG
-- Wi-Fi: WPA3, SAE, Enterprise all enabled
-- LWIP: `max_open_sockets` requires `CONFIG_LWIP_MAX_SOCKETS=16` (app_server needs 13)
-- TinyUSB: SUSPEND/RESUME callbacks must be enabled for `hal_storage.cpp`
+### App Lifecycle
+```cpp
+class MyApp {
+    bool init();        // allocate resources
+    void deinit();      // free resources
+    void start();       // start running
+    void stop();        // stop
+    void update();      // called periodically from main loop
+    void refresh();     // manual trigger
+};
+```
 
-## E-Paper Display Notes
+### HAL API (`pc_hal_*`)
+```c
+void pc_hal_init(void);           // I2C → M5.begin() → Canvas → PMU → power rails
+void pc_hal_update(void);         // M5.update()
+M5Canvas* g_canvas;               // off-screen canvas in PSRAM
+void pc_hal_display(void);        // pushSprite + display()
+uint16_t pc_hal_read_battery_mv(void);
+float pc_hal_battery_pct(void);
+bool pc_hal_is_charging(void);
+void pc_hal_set_epd_power(bool on);
+void pc_hal_deep_sleep(void);
+bool pc_hal_read_sht40(float* temp_c, float* humidity);
+void pc_hal_draw_splash(void);
+void pc_hal_show_power_info(void);
+```
 
-- `display.setEpdMode(epd_quality)` for best color; `epd_fastest` for QR/boot images.
-- After canvas operations: `canvas.pushSprite()` → `display.display()` (or `display.display(dirty_rect)` for partial).
-- 8-bit color depth is native for E Ink Spectra 6.
+## Hardware Rules
 
-## Warnings
+### Init Sequence (strict order)
+1. I2C bus recovery (9 clock pulses if not cold boot)
+2. `M5.begin()` — I2C, buttons, display driver
+3. Create `M5Canvas` in PSRAM (8-bit, 400×600)
+4. `M5PM1.begin()` — power management
+5. EPD power: PYG0 HIGH
+6. Audio power: G45 HIGH, G46 LOW (amp default OFF)
+7. Battery check: shutdown if < 3.1V
 
-- The PlatformIO env uses board `esp32s3box` as a proxy — PaperColor is not yet an official PlatformIO board target.
-- Strapping pins to avoid as general-purpose IO: 0, 1, 2, 3, 8, 9, 18, 43, 46.
-- `CORE_DEBUG_LEVEL=5` in PlatformIO is verbose; set to 1 for production.
-- Button pins differ between the two projects: PlatformIO scaffold uses config.h defines; ESP-IDF demo uses M5Unified's built-in button detection on the same physical pins.
-- The `m5_demo/.gitmodules` points to M5GFX/M5Unified submodules under `components/` — must init before building.
+### Key Constraints
+- **EPD must be powered** before any display operation (PYG0)
+- **EPD + SD share SPI** (CLK=G15, MOSI=G13) — never assert both CS simultaneously
+- **Single I2C bus** for ALL devices: ES8311(0x18), ES7210(0x40), M5PM1(0x6e), RX8130CE(0x32), SHT40(0x44)
+- **RGB LED** single-wire G21, SK6812/WS2812 via `M5.Led`
+- **Buttons** active-low, internal pull-up: A=G10, B=G9, C=G1, PWR=G0
+- **Strapping pins** avoid as GPIO: 0, 1, 2, 3, 8, 9, 18, 43, 46
+
+### EPD Display
+- Native color depth: 8-bit (E Ink Spectra 6)
+- Refresh modes: `epd_quality` (best color), `epd_fastest` (fast, low quality)
+- Render flow: draw to `g_canvas` → `g_canvas->pushSprite(0,0)` → `M5.Display.display()`
+
+## WiFi Manager
+
+`wifi_manager` provides full STA + AP management with NVS-backed config (up to 3 saved networks).
+
+- Auto-retry with backoff (3 attempts, breathing LED)
+- Runtime disconnect detection → reconnect loop
+- AP provisioning mode with captive portal (DNS hijack + HTTP server)
+- LED breathing: slow blue (connecting), green 3s (success), fast blue (provisioning)
+- Button: BTN-B (G9) long press 3s → provisioning; BTN-C (G1) long press 5s → sleep
+
+Note: Current P0 apps (album, news) use independent hardcoded WiFi (not yet migrated to wifi_manager).
+
+## Current Apps
+
+### Album (Network Photo Album)
+- `main/main.cpp` runs this app
+- Fetch: `https://random.MoeJue.cn/randbg?type=mobile&size=0` → 302 redirect → JPEG
+- Uses `esp_http_client` with browser User-Agent, 5 max redirects, 30s timeout
+- Rendering: `g_canvas->drawJpg()` fullscreen, no UI chrome
+- DNS: hardcoded 114.114.114.114 after WiFi connect
+- Key config: `IMAGE_URL` in `album_app.cpp`
+
+### News (RSS Reader)
+- Uses 少数派(sspai) RSS feed: `https://sspai.com/feed`
+- `news_fetcher` → `news_parser` (tag-based RSS 2.0 parser) → render
+- Display: title (Font6) + source + description, no image support in P0
+
+## Development Tips
+
+- Serial port may change on reconnect (`/dev/tty.usbmodem1101` → `2101`); check with `ls /dev/tty.*`
+- Docker container holds serial port; run `docker rm -f papercolor-build` before flashing
+- After flash, container needs restart for next build
+- Enable verbose logging: `CORE_DEBUG_LEVEL=5` in `sdkconfig.defaults`
+- `esp_http_client_get_header()` gets **request** headers, not response headers; use event handler for response
+- `esp_http_client_config_t.host` is the TCP connection target (can be IP), NOT the Host header — the URL's domain handles HTTP Host + TLS SNI
+- Gzip decompression: ESP-IDF v5.5 esp_http_client has no built-in gzip; use miniz `tinfl_decompress_mem_to_mem()` from `esp_rom/include/miniz.h`

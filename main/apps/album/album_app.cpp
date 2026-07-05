@@ -9,7 +9,6 @@
 #include "hal/led_driver.h"
 #include "wifi_manager.h"
 #include "filter.h"
-#include "hal/sd_card.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -372,18 +371,9 @@ bool AlbumApp::init() {
     _img_buf = nullptr; _img_len = 0;
     _decoded_buf = nullptr; _decoded_sw = _decoded_sh = 0;
     _decoded_crop_x = _decoded_out_y = 0;
-    _filter_idx = 0;  // default: None
+    _filter_idx = 1;  // default: Floyd-Steinberg
     wifi_mgr_init();
     led_init(); led_async_start();
-
-    // Test SD card mount
-    if (sd_card_mount()) {
-        ESP_LOGI(TAG, "SD card mounted OK");
-        sd_card_unmount();
-    } else {
-        ESP_LOGW(TAG, "SD card mount failed (no card?)");
-    }
-
     return true;
 }
 
@@ -568,7 +558,7 @@ render_done:
     }
 
     uint32_t t2 = esp_timer_get_time() / 1000;
-    pc_hal_display();
+    pc_hal_epd_refresh();
     uint32_t t3 = esp_timer_get_time() / 1000;
     ESP_LOGI(TAG, "display: pushed to EPD (%dms)", (int)(t3 - t2));
 }
@@ -582,5 +572,10 @@ void AlbumApp::handle_buttons()
     if (BTN_TOP.wasHold()) {             // Long press → provisioning
         ESP_LOGI(TAG, "BTN_TOP hold: provisioning");
         wifi_mgr_trigger_provisioning();
+    }
+    if (BTN_UP.wasClicked()) {           // UP → cycle filter
+        _filter_idx = (_filter_idx + 1) % FILTER_COUNT;
+        ESP_LOGI(TAG, "Filter: %s", FILTERS[_filter_idx].name);
+        if (_decoded_buf) _needs_rerender = true;
     }
 }

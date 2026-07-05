@@ -12,14 +12,14 @@
 
 #include "hal.h"
 #include "config.h"
-#include <M5PM1.h>
-M5PM1* s_pmu = NULL;
 #include <cstdio>
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <esp_rom_sys.h>
 #include <driver/gpio.h>
 #include <esp_sleep.h>
+#include <M5PM1.h>
+M5PM1* s_pmu = NULL;
 
 static const char* TAG = "HAL";
 
@@ -71,7 +71,7 @@ void pc_hal_init(void)
         i2c_bus_recovery();
     }
 
-    // M5 Unified init (I2C, buttons, display driver, SPI bus)
+    // M5 Unified init (I2C, buttons, display driver)
     auto cfg          = M5.config();
     cfg.clear_display = false;
     M5.begin(cfg);
@@ -88,7 +88,7 @@ void pc_hal_init(void)
              M5.Display.width(), M5.Display.height(),
              M5.Display.getColorDepth());
 
-    // ── M5PM1 Power Management (shared instance) ──
+    // ── M5PM1 Power Management ──
     s_pmu = new M5PM1();
     s_pmu->begin(&M5.In_I2C, M5PM1_DEFAULT_ADDR, M5PM1_I2C_FREQ_100K);
     s_pmu->setI2cConfig(0);
@@ -109,6 +109,13 @@ void pc_hal_init(void)
     s_pmu->setChargeEnable(true);
     s_pmu->setBoostEnable(true);
 
+    // SD card: power on, card detect circuit (like the demo)
+    s_pmu->pinMode(M5PM1_GPIO_NUM_3, OUTPUT);  // PY_SD_PWR_EN
+    s_pmu->digitalWrite(M5PM1_GPIO_NUM_3, HIGH);
+    s_pmu->pinMode(M5PM1_GPIO_NUM_4, OUTPUT);  // SD_DET_EN
+    s_pmu->digitalWrite(M5PM1_GPIO_NUM_4, HIGH);
+    s_pmu->pinMode(M5PM1_GPIO_NUM_1, INPUT_PULLUP);  // CARD_DEC
+
     // Check battery — shutdown if critically low (< 3.1V)
     uint16_t battery_mv = 0;
     if (s_pmu->readVbat(&battery_mv) == M5PM1_OK && battery_mv < 3100) {
@@ -116,6 +123,9 @@ void pc_hal_init(void)
         s_pmu->shutdown();
         while (true) { vTaskDelay(pdMS_TO_TICKS(1000)); }
     }
+
+    // Init SPI bus arbiter (mutex only — M5GFX owns physical bus)
+    spi_bus_init();
 
     ESP_LOGI(TAG, "HAL init complete — Battery: %dmV", battery_mv);
 }
@@ -134,12 +144,26 @@ void pc_hal_display(void)
     }
 }
 
+void pc_hal_epd_refresh(void)
+{
+    if (!g_canvas) return;
+    if (!spi_bus_claim(SPI_OWNER_EPD, UINT32_MAX)) {
+        ESP_LOGE(TAG, "EPD claim failed — display skipped");
+        return;
+    }
+    g_canvas->pushSprite(0, 0);
+    M5.Display.display();
+    spi_bus_release();
+}
+
 // ── Power ────────────────────────────────────────────────────
 
 uint16_t pc_hal_read_battery_mv(void)
 {
+    M5PM1 pmu;
     uint16_t mv = 0;
-    if (s_pmu->readVbat(&mv) == M5PM1_OK) {
+    pmu.begin(&M5.In_I2C, M5PM1_DEFAULT_ADDR, M5PM1_I2C_FREQ_100K);
+    if (pmu.readVbat(&mv) == M5PM1_OK) {
         return mv;
     }
     return 0;
@@ -157,8 +181,10 @@ float pc_hal_battery_pct(void)
 
 bool pc_hal_is_charging(void)
 {
+    M5PM1 pmu;
+    pmu.begin(&M5.In_I2C, M5PM1_DEFAULT_ADDR, M5PM1_I2C_FREQ_100K);
     m5pm1_pwr_src_t src = M5PM1_PWR_SRC_UNKNOWN;
-    if (s_pmu->getPowerSource(&src) == M5PM1_OK) {
+    if (pmu.getPowerSource(&src) == M5PM1_OK) {
         return (src == M5PM1_PWR_SRC_5VIN || src == M5PM1_PWR_SRC_5VINOUT);
     }
     return false;
@@ -166,8 +192,10 @@ bool pc_hal_is_charging(void)
 
 void pc_hal_set_epd_power(bool on)
 {
-    s_pmu->pinMode(M5PM1_GPIO_NUM_0, OUTPUT);
-    s_pmu->digitalWrite(M5PM1_GPIO_NUM_0, on ? HIGH : LOW);
+    M5PM1 pmu;
+    pmu.begin(&M5.In_I2C, M5PM1_DEFAULT_ADDR, M5PM1_I2C_FREQ_100K);
+    pmu.pinMode(M5PM1_GPIO_NUM_0, OUTPUT);
+    pmu.digitalWrite(M5PM1_GPIO_NUM_0, on ? HIGH : LOW);
 }
 
 void pc_hal_deep_sleep(void)

@@ -13,6 +13,7 @@
 #include <cstring>
 #include <esp_log.h>
 #include <esp_http_server.h>
+#include <esp_wifi.h>
 #include <lwip/sockets.h>
 #include <lwip/netdb.h>
 #include <cJSON.h>
@@ -37,7 +38,7 @@ static uint32_t             s_last_activity = 0;
 //  Config Page HTML (embedded)
 // ═══════════════════════════════════════════════════════════════
 
-static const char* CONFIG_HTML = R"(
+static const char* CONFIG_HTML = R"HTMLDELIM(
 <!DOCTYPE html>
 <html>
 <head>
@@ -90,7 +91,7 @@ async function scan() {
     const nets = await r.json();
     let html = '';
     nets.forEach(n => {
-      const sec = n.secure ? '🔒' : '🔓';
+      const sec = n.secure ? 'Y' : 'N';
       html += `<div class="scan-item" onclick="pick('${n.ssid}')"><span>${n.ssid}</span><span class="sec">${sec} ${n.rssi}dBm</span></div>`;
     });
     document.getElementById('scanList').innerHTML = html;
@@ -132,7 +133,7 @@ document.getElementById('apName').textContent = location.hostname;
 </script>
 </body>
 </html>
-)";
+)HTMLDELIM";
 
 // ═══════════════════════════════════════════════════════════════
 //  DNS Hijack Server
@@ -349,17 +350,16 @@ void wifi_prov_start(void)
     cfg.max_open_sockets = 5;
 
     if (httpd_start(&s_httpd, &cfg) == ESP_OK) {
-        httpd_register_uri_handler(s_httpd, (httpd_uri_t){
-            .uri = "/", .method = HTTP_GET, .handler = handle_get_root});
-        httpd_register_uri_handler(s_httpd, (httpd_uri_t){
-            .uri = "/api/config", .method = HTTP_POST, .handler = handle_post_config});
-        httpd_register_uri_handler(s_httpd, (httpd_uri_t){
-            .uri = "/api/scan", .method = HTTP_GET, .handler = handle_get_scan});
-        httpd_register_uri_handler(s_httpd, (httpd_uri_t){
-            .uri = "/api/status", .method = HTTP_GET, .handler = handle_get_status});
-        // Catch-all for captive portal
-        httpd_register_uri_handler(s_httpd, (httpd_uri_t){
-            .uri = "/*", .method = HTTP_GET, .handler = handle_get_root});
+        httpd_uri_t h_root   = {"/",       HTTP_GET, handle_get_root};
+        httpd_uri_t h_config = {"/api/config", HTTP_POST, handle_post_config};
+        httpd_uri_t h_scan   = {"/api/scan",   HTTP_GET, handle_get_scan};
+        httpd_uri_t h_status = {"/api/status", HTTP_GET, handle_get_status};
+        httpd_uri_t h_any    = {"/*",      HTTP_GET, handle_get_root};
+        httpd_register_uri_handler(s_httpd, &h_root);
+        httpd_register_uri_handler(s_httpd, &h_config);
+        httpd_register_uri_handler(s_httpd, &h_scan);
+        httpd_register_uri_handler(s_httpd, &h_status);
+        httpd_register_uri_handler(s_httpd, &h_any);
 
         ESP_LOGI(TAG, "HTTP server started on port %d", HTTP_PORT);
     } else {

@@ -57,6 +57,23 @@ bool sd_card_detect(void);
  */
 bool sd_card_mounted(void);
 
+/**
+ * @brief  Lock the SPI bus for SD card file operations.
+ *         Blocks up to timeout_ms. Must call sd_card_unlock() after done.
+ *         Typically used around fopen/fread/fwrite/fclose sequences.
+ * @param  timeout_ms  Max wait time in ms (UINT32_MAX = wait forever).
+ * @return true if lock acquired.
+ * @note   sd_card_mount/unmount acquire the bus internally — no need to
+ *         call lock/unlock around them. Only needed for file operations
+ *         that may overlap with EPD display activity.
+ */
+bool sd_card_lock(uint32_t timeout_ms);
+
+/**
+ * @brief  Release the SPI bus after SD card file operations.
+ */
+void sd_card_unlock(void);
+
 #ifdef __cplusplus
 }
 #endif

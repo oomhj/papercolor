@@ -30,6 +30,4 @@ idf_component_register(
         mbedtls
         json
         fatfs
-        sdmmc
-        esp_driver_sdspi
 )
