@@ -334,6 +334,7 @@ static void retry_task_func(void* param)
             uint32_t deadline = esp_timer_get_time() / 1000 + timeouts[attempt];
             while (esp_timer_get_time() / 1000 < deadline && !s_retry_abort) {
                 if (s_state == WIFI_STATE_STA_OK) { ok = true; break; }
+                if (s_state == WIFI_STATE_STA_FAIL) break;
                 vTaskDelay(pdMS_TO_TICKS(50));
             }
             if (ok || s_retry_abort) break;

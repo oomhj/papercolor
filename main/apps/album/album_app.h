@@ -82,5 +82,6 @@ private:
     void check_daily_update(void);
     void run_pending_download(void);
 
+    void go_to_sleep(void);
     void handle_buttons(void);
 };

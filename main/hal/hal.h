@@ -85,6 +85,35 @@ void pc_hal_set_epd_power(bool on);
  */
 void pc_hal_deep_sleep(void);
 
+// ── Low-Power Sleep (RTC wake) ────────────────────────────────
+
+/**
+ * @brief Check if boot was from RTC alarm wake.
+ * @return true if the PMU wake source was EXT_WAKE (RX8130 IRQ).
+ */
+bool pc_hal_is_rtc_wake(void);
+
+/**
+ * @brief Program the RX8130 RTC to wake the system after @p minutes.
+ * @param minutes Time until next wake (e.g. 30 for 30min).
+ * @return true on success.
+ */
+bool pc_hal_schedule_wake(uint32_t minutes);
+
+/**
+ * @brief Power off the entire system via M5PM1, with RTC wake scheduled.
+ *        ESP32 is fully powered down.  Wake sources: RTC alarm + buttons.
+ * @param minutes Minutes until next RTC wake (0 = no RTC wake, buttons only).
+ */
+void pc_hal_power_off_scheduled(uint32_t minutes);
+
+/**
+ * @brief Read/write one byte of RX8130 RTC battery-backed RAM (4 bytes, 0x20-0x23).
+ *        Data survives deep sleep and M5PM1 power-off.
+ */
+bool pc_hal_rtc_ram_write(uint8_t index, uint8_t value);
+bool pc_hal_rtc_ram_read(uint8_t index, uint8_t* value);
+
 // ── Sensors ──────────────────────────────────────────────────
 
 /**

@@ -13,6 +13,7 @@
 #include "hal.h"
 #include "config.h"
 #include <cstdio>
+#include <ctime>
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <esp_rom_sys.h>
@@ -127,6 +128,12 @@ void pc_hal_init(void)
     // Init SPI bus arbiter (mutex only — M5GFX owns physical bus)
     spi_bus_init();
 
+    // ── RTC wake pin (M5PM1 GPIO2 connected to RX8130 IRQ) ──
+    s_pmu->gpioSetFunc(M5PM1_GPIO_NUM_2, M5PM1_GPIO_FUNC_WAKE);
+    s_pmu->gpioSetPull(M5PM1_GPIO_NUM_2, M5PM1_GPIO_PULL_UP);
+    s_pmu->gpioSetWakeEdge(M5PM1_GPIO_NUM_2, M5PM1_GPIO_WAKE_FALLING);
+    s_pmu->gpioSetWakeEnable(M5PM1_GPIO_NUM_2, true);
+
     ESP_LOGI(TAG, "HAL init complete — Battery: %dmV", battery_mv);
 }
 
@@ -210,6 +217,89 @@ void pc_hal_deep_sleep(void)
                                   ESP_EXT1_WAKEUP_ANY_LOW);
 
     esp_deep_sleep_start();
+}
+
+// ── Low-Power Sleep (RTC wake) ────────────────────────────────
+
+bool pc_hal_is_rtc_wake(void)
+{
+    if (!s_pmu) return false;
+    uint8_t src = 0;
+    if (s_pmu->getWakeSource(&src, M5PM1_CLEAN_NONE) == M5PM1_OK) {
+        return (src & M5PM1_WAKE_SRC_EXT_WAKE) != 0;
+    }
+    return false;
+}
+
+bool pc_hal_schedule_wake(uint32_t minutes)
+{
+    m5::rtc_date_t d;
+    m5::rtc_time_t t;
+    if (!M5.Rtc.getDateTime(&d, &t)) {
+        ESP_LOGE(TAG, "RTC not available");
+        return false;
+    }
+
+    struct tm tm = {};
+    tm.tm_year  = d.year + 100;
+    tm.tm_mon   = d.month - 1;
+    tm.tm_mday  = d.date;
+    tm.tm_hour  = t.hours;
+    tm.tm_min   = t.minutes + (int)minutes;
+    tm.tm_sec   = t.seconds;
+    if (mktime(&tm) < 0) { ESP_LOGE(TAG, "mktime failed"); return false; }
+
+    int ret = M5.Rtc.setAlarmIRQ(&tm);
+    ESP_LOGI(TAG, "Wake scheduled in %u min (%04d-%02d-%02d %02d:%02d:%02d)",
+             minutes, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+             tm.tm_hour, tm.tm_min, tm.tm_sec);
+    return ret > 0;
+}
+
+void pc_hal_power_off_scheduled(uint32_t minutes)
+{
+    M5.Display.sleep();
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    if (minutes > 0) {
+        pc_hal_schedule_wake(minutes);
+    }
+
+    // Clear PMU wake flags + RTC IRQ
+    uint8_t src = 0;
+    s_pmu->getWakeSource(&src, M5PM1_CLEAN_ALL);
+    M5.Rtc.clearIRQ();
+
+    ESP_LOGI(TAG, "Powering off (next wake in %u min)", minutes);
+
+    // M5PM1 sys command: shutdown (disconnects all power rails)
+    s_pmu->sysCmd(M5PM1_SYS_CMD_OFF);
+
+    // Fallback — should be unreachable
+    while (true) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+}
+
+bool pc_hal_rtc_ram_write(uint8_t index, uint8_t value)
+{
+    if (index > 3) return false;
+    if (!M5.In_I2C.start(0x32, false, 400000)) return false;
+    uint8_t buf[] = {(uint8_t)(0x20 + index), value};
+    M5.In_I2C.write(buf, 2);
+    M5.In_I2C.stop();
+    return true;
+}
+
+bool pc_hal_rtc_ram_read(uint8_t index, uint8_t* value)
+{
+    if (index > 3 || !value) return false;
+    uint8_t reg = 0x20 + index;
+    if (!M5.In_I2C.start(0x32, false, 400000)) return false;
+    M5.In_I2C.write(&reg, 1);
+    M5.In_I2C.stop();
+    if (!M5.In_I2C.start(0x32, true, 400000)) return false;
+    M5.In_I2C.read(value, 1);
+    M5.In_I2C.stop();
+    return true;
 }
 
 // ── SHT40 Sensor ─────────────────────────────────────────────

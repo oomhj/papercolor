@@ -528,6 +528,27 @@ bool AlbumApp::fetch_and_show_one(void)
     return ok;
 }
 
+// ── Low-power sleep ─────────────────────────────────────────
+
+static uint64_t s_last_activity_ms = 0;
+#define IDLE_SLEEP_MS  (60ULL * 1000)  // 60s idle → sleep
+
+void AlbumApp::go_to_sleep(void)
+{
+    ESP_LOGI(TAG, "Low-power sleep");
+
+    // Save slide index to RTC RAM
+    pc_hal_rtc_ram_write(0, (uint8_t)_current_idx);
+    pc_hal_rtc_ram_write(1, (uint8_t)(_last_update_date & 0xFF));
+    pc_hal_rtc_ram_write(2, (uint8_t)((_last_update_date >> 8) & 0xFF));
+
+    // Unmount SD
+    if (_sd_mounted) { sd_card_unmount(); _sd_mounted = false; }
+
+    // Power off, wake in 30 min
+    pc_hal_power_off_scheduled(30);
+}
+
 // ── Lifecycle ───────────────────────────────────────────────
 
 bool AlbumApp::init()
@@ -545,47 +566,82 @@ bool AlbumApp::init()
     wifi_mgr_init();
     led_init(); led_async_start();
 
+    // Detect RTC wake → restore index and update date
+    bool rtc_wake = pc_hal_is_rtc_wake();
+    if (rtc_wake) {
+        uint8_t idx = 0;
+        if (pc_hal_rtc_ram_read(0, &idx) && idx >= 1 && idx <= ALBUM_MAX_IMAGES)
+            _current_idx = idx;
+        uint8_t lo = 0, hi = 0;
+        pc_hal_rtc_ram_read(1, &lo);
+        pc_hal_rtc_ram_read(2, &hi);
+        _last_update_date = (hi << 8) | lo;
+        ESP_LOGI(TAG, "RTC wake, restored idx=%d date=%d", _current_idx, _last_update_date);
+    }
+
     _sd_mounted = sd_card_mount();
 
     if (!_sd_mounted) {
         ESP_LOGI(TAG, "No SD card — single-image mode");
-        fetch_and_show_one();
+        if (rtc_wake) {
+            // RTC wake: download 1 new image
+            fetch_and_show_one();
+            go_to_sleep();
+        } else {
+            fetch_and_show_one();
+        }
         return true;
     }
 
-    // ── SD mode: 10-image slideshow ──
+    // ── SD mode ──
     ensure_album_folder();
 
-    _last_update_date = read_index_date();
-    _total_images = scan_folder_images();
+    if (!rtc_wake) {
+        // Normal (button) wake: use existing init logic
+        _last_update_date = read_index_date();
+        _total_images = scan_folder_images();
 
-    // 1. Show cached image immediately (user sees picture right away)
-    if (_total_images > 0) {
-        _current_idx = 1;
-        load_and_show(_current_idx);
-        _last_slide_ms = esp_timer_get_time() / 1000;
-    }
-
-    // 2. No images → use unified refresh (dl 1 → show → queue rest)
-    if (_total_images == 0) {
-        refresh_all_images();
-    } else {
-        int today = get_today();
-        if (today > _last_update_date) {
-            ESP_LOGI(TAG, "New day (%d > %d), queuing download", today, _last_update_date);
-            _dl_pending = true;  // download in update() — no blocking
-        } else {
-            ESP_LOGI(TAG, "Images up to date (%d)", _last_update_date);
+        if (_total_images > 0) {
+            _current_idx = 1;
+            load_and_show(_current_idx);
+            _last_slide_ms = esp_timer_get_time() / 1000;
         }
-    }
 
-    // Show "No Images" only if truly nothing
-    if (_total_images == 0) {
-        g_canvas->fillScreen(TFT_WHITE);
-        g_canvas->setTextColor(TFT_RED);
-        g_canvas->setFont(&fonts::Font4);
-        g_canvas->drawString("No Images", (400 - 140) / 2, 600 / 2 - 14);
-        pc_hal_epd_refresh();
+        if (_total_images == 0) {
+            refresh_all_images();
+        } else {
+            int today = get_today();
+            if (today > _last_update_date) {
+                ESP_LOGI(TAG, "New day (%d > %d), queuing download", today, _last_update_date);
+                _dl_pending = true;
+            }
+        }
+
+        if (_total_images == 0) {
+            g_canvas->fillScreen(TFT_WHITE);
+            g_canvas->setTextColor(TFT_RED);
+            g_canvas->setFont(&fonts::Font4);
+            g_canvas->drawString("No Images", (400 - 140) / 2, 600 / 2 - 14);
+            pc_hal_epd_refresh();
+        }
+    } else {
+        // RTC wake: advance to next image
+        _total_images = scan_folder_images();
+        if (_total_images > 0) {
+            _current_idx = (_current_idx % _total_images) + 1;
+            load_and_show(_current_idx);
+            _last_slide_ms = esp_timer_get_time() / 1000;
+        }
+
+        // Check daily update
+        int today = get_today();
+        if (today > 0 && today > _last_update_date) {
+            ESP_LOGI(TAG, "RTC wake new day (%d > %d), refreshing", today, _last_update_date);
+            refresh_all_images();
+        }
+
+        // Go back to sleep immediately after RTC wake
+        go_to_sleep();
     }
 
     _last_date_check_ms = esp_timer_get_time() / 1000;
@@ -656,13 +712,27 @@ void AlbumApp::update()
             fetch_and_show_one();
         }
     }
+
     handle_buttons();
+
+    // ── Auto-sleep after idle timeout ──
+    if (_dl_pending || _dl_in_progress) return;           // downloading
+    if (spi_bus_get_owner() != SPI_OWNER_NONE) return;    // SPI busy
+
+    uint64_t now = esp_timer_get_time() / 1000;
+    if (now - s_last_activity_ms >= IDLE_SLEEP_MS) {
+        go_to_sleep();
+    }
 }
 
 // ── Buttons ─────────────────────────────────────────────────
 
 void AlbumApp::handle_buttons()
 {
+    // Track any button activity for idle sleep timer
+    if (BTN_UP.isPressed() || BTN_DOWN.isPressed() || BTN_TOP.isPressed())
+        s_last_activity_ms = esp_timer_get_time() / 1000;
+
     // UP + DOWN held together → provisioning
     if (BTN_UP.isPressed() && BTN_DOWN.isPressed()) {
         if (!_btn_busy) {
