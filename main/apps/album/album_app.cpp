@@ -114,8 +114,8 @@ static bool wifi_ensure_connected(void)
     // Already connected
     if (wifi_mgr_get_state() == WIFI_STATE_STA_OK) return true;
 
-    ESP_LOGI(TAG, "Connecting WiFi (15s timeout)...");
-    if (wifi_mgr_connect_sta(15000)) {
+    ESP_LOGI(TAG, "Connecting WiFi (5s timeout)...");
+    if (wifi_mgr_connect_sta(5000)) {
         set_dns();
         ESP_LOGI(TAG, "WiFi connected");
         return true;
@@ -670,7 +670,7 @@ void AlbumApp::handle_buttons()
         if (!_btn_busy) {
             _btn_busy = true;
             // Try wifi.txt from SD first
-            if (load_wifi_from_sd() && wifi_mgr_connect_sta(15000)) {
+            if (load_wifi_from_sd() && wifi_mgr_connect_sta(5000)) {
                 set_dns();
                 save_wifi_to_sd();
                 ESP_LOGI(TAG, "Connected via SD wifi.txt");

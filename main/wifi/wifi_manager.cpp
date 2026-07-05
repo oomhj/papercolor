@@ -78,9 +78,11 @@ static void event_handler(void* arg, esp_event_base_t base, int32_t id, void* da
     }
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         ESP_LOGI(TAG, "STA disconnected");
-        // Runtime disconnection (was connected before)
         if (s_state == WIFI_STATE_STA_OK) {
-            set_state(WIFI_STATE_STA_LOST);
+            set_state(WIFI_STATE_STA_LOST);  // runtime loss
+        }
+        if (s_state == WIFI_STATE_STA_CN) {
+            set_state(WIFI_STATE_STA_FAIL);  // connection failed
         }
     }
     if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
@@ -119,8 +121,9 @@ void wifi_mgr_init(void)
         ESP_LOGE(TAG, "event loop failed");
     }
 
-    // Create AP netif (with built-in DHCP server for clients)
+    // Create netifs (AP + STA)
     esp_netif_create_default_wifi_ap();
+    esp_netif_create_default_wifi_sta();
 
     // Register handlers
     esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL, NULL);
@@ -160,7 +163,7 @@ bool wifi_mgr_connect_sta(uint32_t timeout_ms)
         if (!wifi_mgr_load_network(slot, ssid, sizeof(ssid), pass, sizeof(pass)))
             continue;
 
-        ESP_LOGI(TAG, "Trying slot %d: %s", slot, ssid);
+        ESP_LOGI(TAG, "Trying slot %d: %s (pass: %s)", slot, ssid, pass[0] ? pass : "<none>");
         wifi_config_t wc = {};
         strcpy((char*)wc.sta.ssid, ssid);
         if (pass[0]) strcpy((char*)wc.sta.password, pass);
