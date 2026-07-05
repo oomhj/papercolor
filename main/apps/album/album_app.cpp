@@ -15,23 +15,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <cmath>
-#include <ctime>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <esp_heap_caps.h>
 #include <esp_jpeg_dec.h>
-#include <esp_wifi.h>
-#include <esp_event.h>
-#include <esp_netif.h>
 #include <esp_http_client.h>
 #include <esp_crt_bundle.h>
-#include <nvs_flash.h>
-#include <lwip/netdb.h>
-#include <lwip/sockets.h>
-#include <arpa/inet.h>
 #include <M5Unified.hpp>
 
 static const char* TAG = "Album";
@@ -227,7 +218,7 @@ int AlbumApp::read_index_date(void)
     char path[64];
     snprintf(path, sizeof(path), "%s/index.txt", ALBUM_DIR);
 
-    sd_card_lock(UINT32_MAX);
+    sd_card_lock(2000);
     FILE* f = fopen(path, "r");
     if (!f) { sd_card_unlock(); return 0; }
     int date = 0;
@@ -242,7 +233,7 @@ void AlbumApp::write_index_date(int date)
     char path[64];
     snprintf(path, sizeof(path), "%s/index.txt", ALBUM_DIR);
 
-    sd_card_lock(UINT32_MAX);
+    sd_card_lock(2000);
     FILE* f = fopen(path, "w");
     if (f) { fprintf(f, "%d\n", date); fclose(f); }
     sd_card_unlock();
@@ -296,7 +287,7 @@ bool AlbumApp::download_one(int index)
     if (!http_fetch_one("https://bing.img.run/rand_1366x768.php", &jpeg, &len))
         return false;
 
-    sd_card_lock(UINT32_MAX);
+    sd_card_lock(2000);
     unlink(path);  // remove old file if exists
     FILE* f = fopen(path, "w");
     if (f) { fwrite(jpeg, 1, len, f); fclose(f); }
@@ -333,7 +324,7 @@ bool AlbumApp::load_and_show(int index)
     char path[64];
     snprintf(path, sizeof(path), "%s/%d.jpg", ALBUM_DIR, index);
 
-    sd_card_lock(UINT32_MAX);
+    sd_card_lock(2000);
     FILE* f = fopen(path, "r");
     if (!f) { sd_card_unlock(); return false; }
 
