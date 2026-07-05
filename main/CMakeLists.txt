@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "main.cpp"
         "hal/hal.cpp"
+        "hal/battery.cpp"
         "hal/led_driver.cpp"
         "hal/spi_bus.cpp"
         "hal/sd_card.cpp"

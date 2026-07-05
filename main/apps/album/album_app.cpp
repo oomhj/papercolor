@@ -8,6 +8,7 @@
 
 #include "album_app.h"
 #include "hal/hal.h"
+#include "hal/battery.h"
 #include "hal/sd_card.h"
 #include "hal/led_driver.h"
 #include "wifi_manager.h"
@@ -427,6 +428,7 @@ bool AlbumApp::load_and_show(int index)
     _img_len = (size_t)flen;
 
     ESP_LOGI(TAG, "[LOAD] image %d", index);
+    bat_update();  // log battery when displaying a photo
     return decode_and_render(_img_buf, _img_len);
 }
 
@@ -520,6 +522,8 @@ bool AlbumApp::fetch_and_show_one(void)
         return false;
     }
 
+    bat_update();                            // log battery when fetching
+
     led_success();                           // green 2s: ready to decode
 
     bool ok = decode_and_render(jpeg, len);
@@ -535,7 +539,17 @@ static uint64_t s_last_activity_ms = 0;
 
 void AlbumApp::go_to_sleep(void)
 {
-    ESP_LOGI(TAG, "Low-power sleep");
+    // Check battery — if low, shutdown permanently (no wake)
+    if (bat_is_low()) {
+        ESP_LOGW(TAG, "Battery low (%u%%), shutting down", bat_get_pct());
+        pc_hal_rtc_ram_write(0, (uint8_t)_current_idx);
+        pc_hal_rtc_ram_write(1, (uint8_t)(_last_update_date & 0xFF));
+        pc_hal_rtc_ram_write(2, (uint8_t)((_last_update_date >> 8) & 0xFF));
+        if (_sd_mounted) { sd_card_unmount(); _sd_mounted = false; }
+        pc_hal_power_off_scheduled(0);  // shutdown, no RTC wake
+    }
+
+    ESP_LOGI(TAG, "Low-power sleep (%u%%)", bat_get_pct());
 
     // Save slide index to RTC RAM
     pc_hal_rtc_ram_write(0, (uint8_t)_current_idx);
