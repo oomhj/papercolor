@@ -459,7 +459,7 @@ bool AlbumApp::decode_and_render(const uint8_t* jpeg, size_t len)
 
 void AlbumApp::show_next(void)
 {
-    if (_total_images == 0) return;
+    if (_total_images == 0 || _dl_in_progress) return;
     _current_idx = (_current_idx % _total_images) + 1;
     _last_slide_ms = esp_timer_get_time() / 1000;
     load_and_show(_current_idx);
@@ -467,7 +467,7 @@ void AlbumApp::show_next(void)
 
 void AlbumApp::show_prev(void)
 {
-    if (_total_images == 0) return;
+    if (_total_images == 0 || _dl_in_progress) return;
     _current_idx = (_current_idx > 1) ? _current_idx - 1 : _total_images;
     _last_slide_ms = esp_timer_get_time() / 1000;
     load_and_show(_current_idx);
@@ -475,7 +475,7 @@ void AlbumApp::show_prev(void)
 
 void AlbumApp::check_auto_advance(void)
 {
-    if (_total_images < 2) return;
+    if (_total_images < 2 || _dl_in_progress) return;
     uint64_t now_ms = esp_timer_get_time() / 1000;
     if (now_ms - _last_slide_ms >= SLIDE_INTERVAL_MS) {
         ESP_LOGI(TAG, "Auto-advance");
@@ -485,6 +485,7 @@ void AlbumApp::check_auto_advance(void)
 
 void AlbumApp::check_daily_update(void)
 {
+    if (_dl_in_progress) return;
     uint64_t now_ms = esp_timer_get_time() / 1000;
     if (now_ms - _last_date_check_ms < CHECK_INTERVAL_MS) return;
     _last_date_check_ms = now_ms;
