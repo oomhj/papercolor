@@ -626,15 +626,13 @@ void AlbumApp::run_pending_download(void)
         }
     }
 
-    // If we got all 10, mark done, update index, show first new image
+    // All 10 downloaded — update index, but DON'T refresh display
+    // Image 1 is already shown; slideshow timer will advance at 30min
     if (_total_images >= ALBUM_MAX_IMAGES) {
         int today = get_today();
         if (today > 0) write_index_date(today);
         _dl_pending = false;
-        _current_idx = 1;
-        load_and_show(_current_idx);
-        _last_slide_ms = esp_timer_get_time() / 1000;
-        ESP_LOGI(TAG, "Download complete, showing image 1");
+        ESP_LOGI(TAG, "Download complete (10 images), slideshow continues");
     }
 
     _dl_in_progress = false;
