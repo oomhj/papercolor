@@ -133,6 +133,7 @@ void sd_card_unlock(void);       // release SPI after SD
 - **Single I2C bus** for ALL devices: ES8311(0x18), ES7210(0x40), M5PM1(0x6e), RX8130CE(0x32), SHT40(0x44)
 - **RGB LED** single-wire G21, SK6812/WS2812 via `M5.Led`
 - **Buttons** active-low, internal pull-up: A=G10, B=G9, C=G1, PWR=G0
+- **LED indicators**: breathing(🟦blue=loading 🟨yellow=provisioning) flash(🟧orange~2s=no-network 🔴red~2s=fail 🟢green~2s=success)
 - **Strapping pins** avoid as GPIO: 0, 1, 2, 3, 8, 9, 18, 43, 46
 
 ### EPD Display
@@ -150,7 +151,7 @@ void sd_card_unlock(void);       // release SPI after SD
 - LED breathing: slow blue (connecting), green 3s (success), fast blue (provisioning)
 - Button: BTN-B (G9) long press 3s → provisioning; BTN-C (G1) long press 5s → sleep
 
-Note: Album app uses `wifi_manager` (NVS-saved networks + hardcoded fallback). News app still uses independent hardcoded WiFi.
+Note: Album app uses `wifi_manager` (NVS + SD wifi.txt + AP provisioning). News app still uses independent hardcoded WiFi.
 
 ## Current Apps
 
@@ -164,7 +165,7 @@ Note: Album app uses `wifi_manager` (NVS-saved networks + hardcoded fallback). N
   - Auto-advance every 30min, UP/DOWN for manual navigation
   - UP+DOWN held together → WiFi provisioning captive portal
 - **No-SD mode**: fetch 1 image via HTTP, display, auto-refresh every 30min
-- WiFi: uses `wifi_manager` (NVS-backed saved networks) with hardcoded fallback
+- WiFi: uses `wifi_manager` (NVS-backed). Config from `/sd/wifi.txt` (line1=SSID, line2=pass, line3=DNS optional, default 114.114.114.114). UP+DOWN→provisioning.
 - Fetch: `https://bing.img.run/rand_1366x768.php` → 302 redirect → JPEG
 - Rendering: `esp_new_jpeg` decode → Floyd-Steinberg dither → EPD
 
