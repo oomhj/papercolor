@@ -2,12 +2,18 @@
  * PaperColor — Network Photo Album
  *
  * Fetches random images from API URL, displays on EPD.
+ * Decoded images are cached on SD card for instant display
+ * on subsequent boots (no network/decode needed).
  */
 
 #pragma once
 
 #include <cstdint>
 #include <cstddef>
+
+// Cache file on SD card — holds the last successfully decoded RGB565_BE buffer
+// with a header so it can be loaded instantly on next boot.
+#define ALBUM_SD_CACHE "/sd/ALBUM.BIN"
 
 class AlbumApp {
 public:
@@ -34,6 +40,12 @@ private:
     int _decoded_out_y      = 0;   // vertical centering y offset
 
     int _filter_idx         = 0;   // current filter index
+
+    bool _sd_mounted        = false;
+
+    // SD cache I/O
+    bool cache_save(void);
+    bool cache_load(void);
 
     bool fetch_image(const char* url);
     void render();
