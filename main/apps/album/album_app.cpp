@@ -33,22 +33,9 @@ static const char* TAG = "Album";
 // ── Image API ─────────────────────────────────────────────────
 static const char* IMAGE_URL = "https://bing.img.run/rand_1366x768.php";
 
-// ── SD cache header ───────────────────────────────────────────
-// On-disk format of the decoded buffer cache:
-//   [magic:4] [sw:4] [sh:4] [crop_x:4] [out_y:4] [data_size:4]
-//   followed by data_size bytes of RGB565_BE pixels.
-#define CACHE_MAGIC 0x50414C42  // "PALB"
-
-#pragma pack(push, 1)
-struct CacheHeader {
-    uint32_t magic;
-    uint32_t sw;
-    uint32_t sh;
-    uint32_t crop_x;
-    uint32_t out_y;
-    uint32_t data_size;
-};
-#pragma pack(pop)
+// ── SD cache ─────────────────────────────────────────────────
+// Raw JPEG data saved verbatim to SD card. Self-describing format
+// (JPEG file header FF D8) — no wrapper header needed.
 
 // ── WiFi ──────────────────────────────────────────────────────
 #ifndef ALBUM_SSID
@@ -368,20 +355,9 @@ static bool http_fetch_image(const char* url,
 
 // ── SD cache ─────────────────────────────────────────────────
 
-bool AlbumApp::cache_save(void)
+bool AlbumApp::cache_save(const uint8_t* data, size_t len)
 {
-    if (!_sd_mounted || !_decoded_buf) return false;
-
-    // Calculate total pixel data size
-    uint32_t data_size = (uint32_t)_decoded_sw * _decoded_sh * 2;  // RGB565_BE = 2 B/px
-
-    CacheHeader hdr = {};
-    hdr.magic     = CACHE_MAGIC;
-    hdr.sw        = (uint32_t)_decoded_sw;
-    hdr.sh        = (uint32_t)_decoded_sh;
-    hdr.crop_x    = (uint32_t)_decoded_crop_x;
-    hdr.out_y     = (uint32_t)_decoded_out_y;
-    hdr.data_size = data_size;
+    if (!_sd_mounted || !data || len == 0) return false;
 
     sd_card_lock(UINT32_MAX);
     FILE* f = fopen(ALBUM_SD_CACHE, "w");
@@ -390,13 +366,15 @@ bool AlbumApp::cache_save(void)
         sd_card_unlock();
         return false;
     }
-    fwrite(&hdr, sizeof(hdr), 1, f);
-    fwrite(_decoded_buf, data_size, 1, f);
+    size_t written = fwrite(data, 1, len, f);
     fclose(f);
     sd_card_unlock();
 
-    ESP_LOGI(TAG, "cache saved: %ux%u (%u bytes raw)",
-             hdr.sw, hdr.sh, data_size);
+    if (written != len) {
+        ESP_LOGW(TAG, "cache_save: short write %zu/%zu", written, len);
+        return false;
+    }
+    ESP_LOGI(TAG, "JPEG cached: %zu bytes", len);
     return true;
 }
 
@@ -411,49 +389,47 @@ bool AlbumApp::cache_load(void)
         return false;
     }
 
-    CacheHeader hdr;
-    if (fread(&hdr, sizeof(hdr), 1, f) != 1 || hdr.magic != CACHE_MAGIC) {
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (len <= 0 || len > 1024 * 1024) {  // sanity cap: 1 MB
         fclose(f);
         sd_card_unlock();
         return false;
     }
 
-    // Validate
-    if (hdr.sw == 0 || hdr.sh == 0 || hdr.data_size == 0 ||
-        hdr.data_size > 1024 * 1024 * 2) {  // sanity cap: 2 MB
-        ESP_LOGW(TAG, "cache_load: invalid header");
-        fclose(f);
-        sd_card_unlock();
-        return false;
-    }
-
-    uint8_t* buf = (uint8_t*)malloc(hdr.data_size);
+    uint8_t* buf = (uint8_t*)malloc((size_t)len);
     if (!buf) {
-        ESP_LOGE(TAG, "cache_load: OOM (%u bytes)", hdr.data_size);
+        ESP_LOGE(TAG, "cache_load: OOM (%ld bytes)", len);
         fclose(f);
         sd_card_unlock();
         return false;
     }
 
-    size_t got = fread(buf, 1, hdr.data_size, f);
+    size_t got = fread(buf, 1, (size_t)len, f);
     fclose(f);
     sd_card_unlock();
 
-    if (got != hdr.data_size) {
-        ESP_LOGW(TAG, "cache_load: short read %zu/%u", got, hdr.data_size);
+    if (got != (size_t)len) {
+        ESP_LOGW(TAG, "cache_load: short read %zu/%ld", got, len);
         free(buf);
         return false;
     }
 
-    // Success — replace decoded buffer
-    _decoded_buf   = buf;
-    _decoded_sw    = (int)hdr.sw;
-    _decoded_sh    = (int)hdr.sh;
-    _decoded_crop_x = (int)hdr.crop_x;
-    _decoded_out_y  = (int)hdr.out_y;
+    // Validate JPEG magic (FF D8)
+    if (len < 2 || buf[0] != 0xFF || buf[1] != 0xD8) {
+        ESP_LOGW(TAG, "cache_load: not a valid JPEG (magic=0x%02X%02X)",
+                 len >= 2 ? buf[0] : 0, len >= 2 ? buf[1] : 0);
+        free(buf);
+        return false;
+    }
 
-    ESP_LOGI(TAG, "cache loaded: %ux%u (%u bytes)",
-             hdr.sw, hdr.sh, hdr.data_size);
+    // Set JPEG buffer — render() will decode it
+    _img_buf = buf;
+    _img_len = (size_t)len;
+
+    ESP_LOGI(TAG, "JPEG loaded from SD: %zu bytes", _img_len);
     return true;
 }
 
@@ -502,7 +478,7 @@ void AlbumApp::update()
         if (_decoded_buf) { free(_decoded_buf); _decoded_buf = nullptr; }
         ESP_LOGI(TAG, "--- Refresh triggered ---");
 
-        // ── Try SD cache first (instant, no network) ──
+        // ── Try SD cache first (load JPEG, decode locally) ──
         if (cache_load()) {
             render();
             return;
@@ -531,6 +507,9 @@ void AlbumApp::update()
         }
 
         if (ok) {
+            // Save the new JPEG to SD card cache for next boot
+            cache_save(_img_buf, _img_len);
+
             led_async_flash(0, 255, 0, 3);       // green 3×: ready to render
             render();
         } else {
@@ -597,9 +576,6 @@ void AlbumApp::render()
                             _decoded_crop_x = crop_x;
                             _decoded_out_y = out_y;
                             ok = true;
-
-                            // Save to SD cache for next boot
-                            cache_save();
                         } else {
                             jpeg_free_align(out);
                         }
