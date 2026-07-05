@@ -246,6 +246,37 @@ static bool decode_jpeg(const uint8_t* jpeg, size_t len,
     return ok;
 }
 
+static void draw_battery_icon(void)
+{
+    const int w = M5.Display.width();
+    int pct = bat_get_pct();
+    int segs = (pct + 9) / 20;
+    if (segs > 5) segs = 5;
+
+    // Smaller icon, top-right
+    int bx = w - 36, by = 6;
+    int bw = 30, bh = 13;
+
+    g_canvas->drawRect(bx, by, bw, bh, TFT_BLACK);
+    g_canvas->fillRect(bx + bw, by + 3, 3, bh - 6, TFT_BLACK);
+
+    int seg_w = 4, seg_gap = 1, seg_h = 9;
+    int sx = bx + 3, sy = by + 2;
+    for (int i = 0; i < 5; i++) {
+        int x = sx + i * (seg_w + seg_gap);
+        if (i < segs)
+            g_canvas->fillRect(x, sy, seg_w, seg_h, TFT_BLACK);
+        else
+            g_canvas->drawRect(x, sy, seg_w, seg_h, TFT_BLACK);
+    }
+
+    if (bat_is_charging()) {
+        g_canvas->setTextColor(TFT_BLACK);
+        g_canvas->setFont(&fonts::Font0);
+        g_canvas->drawString("+", bx + 11, by);
+    }
+}
+
 static void filter_and_display(uint8_t* decoded, int sw, int sh,
                                 int crop_x, int out_y)
 {
@@ -265,6 +296,10 @@ static void filter_and_display(uint8_t* decoded, int sw, int sh,
 
     FILTERS[1].fn(crop, dither, w, h);  // Floyd-Steinberg
     g_canvas->pushImage(0, 0, w, h, dither);
+
+    // Overlay battery icon
+    draw_battery_icon();
+
     free(crop);
     free(dither);
 }
