@@ -34,9 +34,11 @@ static const char* TAG = "Album";
 // ── WiFi config from SD (/sd/wifi.txt) ─────────────────────
 // Format: first line = SSID, second line = password
 
+static char s_dns_str[32] = "114.114.114.114";  // default DNS, overridable via wifi.txt
+
 static bool load_wifi_from_sd(void)
 {
-    char ssid[64] = {}, pass[64] = {};
+    char ssid[64] = {}, pass[64] = {}, dns[32] = {};
 
     sd_card_lock(2000);
     FILE* f = fopen("/sd/wifi.txt", "r");
@@ -45,13 +47,20 @@ static bool load_wifi_from_sd(void)
     if (!fgets(ssid, sizeof(ssid), f) || !fgets(pass, sizeof(pass), f)) {
         fclose(f); sd_card_unlock(); return false;
     }
+    // Optional 3rd line: DNS server
+    fgets(dns, sizeof(dns), f);
     fclose(f); sd_card_unlock();
 
     ssid[strcspn(ssid, "\r\n")] = '\0';
     pass[strcspn(pass, "\r\n")] = '\0';
     if (strlen(ssid) == 0) return false;
 
-    ESP_LOGI(TAG, "WiFi loaded from SD: %s", ssid);
+    if (strlen(dns) > 0) {
+        dns[strcspn(dns, "\r\n")] = '\0';
+        if (strlen(dns) > 0) strncpy(s_dns_str, dns, sizeof(s_dns_str) - 1);
+    }
+
+    ESP_LOGI(TAG, "WiFi loaded from SD: %s (DNS: %s)", ssid, s_dns_str);
     wifi_mgr_save_network(0, ssid, pass);
     return true;
 }
@@ -64,9 +73,9 @@ static void save_wifi_to_sd(void)
 
     sd_card_lock(2000);
     FILE* f = fopen("/sd/wifi.txt", "w");
-    if (f) { fprintf(f, "%s\n%s\n", ssid, pass); fclose(f); }
+    if (f) { fprintf(f, "%s\n%s\n%s\n", ssid, pass, s_dns_str); fclose(f); }
     sd_card_unlock();
-    ESP_LOGI(TAG, "WiFi saved to /sd/wifi.txt: %s", ssid);
+    ESP_LOGI(TAG, "WiFi saved to /sd/wifi.txt: %s (DNS: %s)", ssid, s_dns_str);
 }
 
 static void set_dns(void)
@@ -74,10 +83,10 @@ static void set_dns(void)
     esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     if (!netif) return;
     esp_netif_dns_info_t dns{};
-    dns.ip.u_addr.ip4.addr = esp_ip4addr_aton("114.114.114.114");
+    dns.ip.u_addr.ip4.addr = esp_ip4addr_aton(s_dns_str);
     dns.ip.type = ESP_IPADDR_TYPE_V4;
     esp_netif_set_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns);
-    ESP_LOGI(TAG, "DNS set to 114.114.114.114");
+    ESP_LOGI(TAG, "DNS set to %s", s_dns_str);
 }
 
 static bool wifi_ensure_connected(void)
