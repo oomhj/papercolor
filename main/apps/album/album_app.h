@@ -72,8 +72,8 @@ private:
     bool fetch_and_show_one(void);   // no-SD: fetch 1, show immediately
 
     // Display
-    bool load_and_show(int index);
-    bool decode_and_render(const uint8_t* jpeg, size_t len);
+    bool load_and_show(int index, bool fast = false);
+    bool decode_and_render(const uint8_t* jpeg, size_t len, bool fast = false);
 
     // Navigation
     void show_next(void);

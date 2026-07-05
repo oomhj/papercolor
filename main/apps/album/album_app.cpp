@@ -482,7 +482,7 @@ void AlbumApp::refresh_all_images(void)
 
 // ── Load & display ──────────────────────────────────────────
 
-bool AlbumApp::load_and_show(int index)
+bool AlbumApp::load_and_show(int index, bool fast)
 {
     if (index < 1) return false;
 
@@ -510,17 +510,16 @@ bool AlbumApp::load_and_show(int index)
     }
 
     if (_img_buf) { free(_img_buf); _img_buf = nullptr; }
-    // _decoded_buf is freed + set to null inside decode_and_render()
     _decoded_buf = nullptr;
     _img_buf = jpeg;
     _img_len = (size_t)flen;
 
-    ESP_LOGI(TAG, "[LOAD] image %d", index);
-    bat_update();  // log battery when displaying a photo
-    return decode_and_render(_img_buf, _img_len);
+    ESP_LOGI(TAG, "[LOAD] image %d%s", index, fast ? " fast" : "");
+    bat_update();
+    return decode_and_render(_img_buf, _img_len, fast);
 }
 
-bool AlbumApp::decode_and_render(const uint8_t* jpeg, size_t len)
+bool AlbumApp::decode_and_render(const uint8_t* jpeg, size_t len, bool fast)
 {
     if (_decoded_buf) { free(_decoded_buf); _decoded_buf = nullptr; }
 
@@ -537,11 +536,11 @@ bool AlbumApp::decode_and_render(const uint8_t* jpeg, size_t len)
 
     if (_img_buf) { free(_img_buf); _img_buf = nullptr; _img_len = 0; }
 
-    pc_hal_epd_refresh(false);  // quality mode for photos
+    pc_hal_epd_refresh(fast);
     uint32_t t3 = esp_timer_get_time() / 1000;
 
-    ESP_LOGI(TAG, "Image: decode %dms filter %dms epd %dms",
-             (int)(t1 - t0), (int)(t2 - t1), (int)(t3 - t2));
+    ESP_LOGI(TAG, "Image: decode %dms filter %dms epd %dms%s",
+             (int)(t1 - t0), (int)(t2 - t1), (int)(t3 - t2), fast ? " fast" : "");
     return true;
 }
 
@@ -552,7 +551,7 @@ void AlbumApp::show_next(void)
     if (_total_images == 0 || _dl_in_progress) return;
     _current_idx = (_current_idx % _total_images) + 1;
     _last_slide_ms = esp_timer_get_time() / 1000;
-    load_and_show(_current_idx);
+    load_and_show(_current_idx, true);   // fast: button press
 }
 
 void AlbumApp::show_prev(void)
@@ -560,7 +559,7 @@ void AlbumApp::show_prev(void)
     if (_total_images == 0 || _dl_in_progress) return;
     _current_idx = (_current_idx > 1) ? _current_idx - 1 : _total_images;
     _last_slide_ms = esp_timer_get_time() / 1000;
-    load_and_show(_current_idx);
+    load_and_show(_current_idx, true);   // fast: button press
 }
 
 void AlbumApp::check_auto_advance(void)
