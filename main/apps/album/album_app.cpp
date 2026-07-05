@@ -39,75 +39,29 @@ static const char* TAG = "Album";
 #define SLIDE_INTERVAL_MS  (30ULL * 60 * 1000)   // 30 min
 #define CHECK_INTERVAL_MS  (60ULL * 60 * 1000)   // 1 hour — how often to check if day changed
 
-#ifndef ALBUM_SSID
-#define ALBUM_SSID "Jason-home"
-#endif
-#ifndef ALBUM_PASS
-#define ALBUM_PASS "admin1234"
-#endif
-
-// ── WiFi ────────────────────────────────────────────────────
-
-static bool s_wifi_inited = false;
+// ── WiFi helper (wraps wifi_manager) ────────────────────────
 
 static bool wifi_ensure_connected(void)
 {
-    ESP_LOGI(TAG, "WiFi connecting...");
-
-    if (!s_wifi_inited) {
-        esp_err_t e = nvs_flash_init();
-        if (e == ESP_ERR_NVS_NO_FREE_PAGES || e == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-            nvs_flash_erase();
-            e = nvs_flash_init();
-        }
-        if (e != ESP_OK) { ESP_LOGE(TAG, "NVS: %s", esp_err_to_name(e)); return false; }
-
-        esp_netif_init();
-        esp_event_loop_create_default();
-        esp_netif_create_default_wifi_sta();
-
-        wifi_init_config_t wcfg = WIFI_INIT_CONFIG_DEFAULT();
-        if (esp_wifi_init(&wcfg) != ESP_OK) { ESP_LOGE(TAG, "wifi init fail"); return false; }
-        esp_wifi_set_mode(WIFI_MODE_STA);
-
-        wifi_config_t wc = {};
-        strcpy((char*)wc.sta.ssid, ALBUM_SSID);
-        strcpy((char*)wc.sta.password, ALBUM_PASS);
-        wc.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
-        esp_wifi_set_config(WIFI_IF_STA, &wc);
-        esp_wifi_start();
-        s_wifi_inited = true;
+    // wifi_mgr_init() already called in AlbumApp::init()
+    if (wifi_mgr_get_state() == WIFI_STATE_STA_OK) {
+        return true;  // already connected
     }
 
-    wifi_ap_record_t ap;
-    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+    // Try saved networks first (from provisioning)
+    if (wifi_mgr_connect_sta(15000)) {
         return true;
     }
 
-    esp_wifi_connect();
-
-    uint32_t deadline = esp_timer_get_time() / 1000 + 15000;
-    while (esp_timer_get_time() / 1000 < deadline) {
-        if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
-            esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-            if (netif) {
-                for (int i = 0; i < 50; i++) {
-                    esp_netif_ip_info_t ip;
-                    if (esp_netif_get_ip_info(netif, &ip) == ESP_OK && ip.ip.addr != 0)
-                        break;
-                    vTaskDelay(pdMS_TO_TICKS(200));
-                }
-                vTaskDelay(pdMS_TO_TICKS(500));
-                esp_netif_dns_info_t dns{};
-                dns.ip.u_addr.ip4.addr = esp_ip4addr_aton("114.114.114.114");
-                dns.ip.type = ESP_IPADDR_TYPE_V4;
-                esp_netif_set_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns);
-            }
-            return true;
-        }
-        vTaskDelay(pdMS_TO_TICKS(200));
+    // Fallback to hardcoded credentials
+    const char* ssid = "Jason-home";
+    const char* pass = "admin1234";
+    wifi_mgr_save_network(0, ssid, pass);
+    if (wifi_mgr_connect_sta(15000)) {
+        return true;
     }
-    ESP_LOGW(TAG, "WiFi timeout (15s)");
+
+    ESP_LOGW(TAG, "WiFi not available");
     return false;
 }
 
@@ -343,6 +297,7 @@ bool AlbumApp::download_one(int index)
         return false;
 
     sd_card_lock(UINT32_MAX);
+    unlink(path);  // remove old file if exists
     FILE* f = fopen(path, "w");
     if (f) { fwrite(jpeg, 1, len, f); fclose(f); }
     sd_card_unlock();
@@ -353,34 +308,20 @@ bool AlbumApp::download_one(int index)
     return true;
 }
 
-bool AlbumApp::update_images(void)
+void AlbumApp::refresh_all_images(void)
 {
-    ESP_LOGI(TAG, "Updating images from network...");
-    if (!wifi_ensure_connected()) {
-        ESP_LOGW(TAG, "No network — keeping existing images");
-        return false;
-    }
+    ESP_LOGI(TAG, "Refresh: dl 1 → show → queue rest");
 
-    // Delete old images
-    for (int i = 1; i <= ALBUM_MAX_IMAGES; i++) {
-        char p[64]; snprintf(p, sizeof(p), "%s/%d.jpg", ALBUM_DIR, i);
-        unlink(p);
-    }
+    _total_images = 0;
 
-    int ok = 0;
-    for (int i = 1; i <= ALBUM_MAX_IMAGES; i++) {
-        if (download_one(i)) ok++; else break;
+    // Download 1st, show immediately
+    if (download_one(1)) {
+        _total_images = 1;
+        _current_idx = 1;
+        load_and_show(_current_idx);
+        _last_slide_ms = esp_timer_get_time() / 1000;
+        _dl_pending = true;   // 2..10 in background
     }
-
-    if (ok == 0) {
-        ESP_LOGE(TAG, "All downloads failed");
-        return false;
-    }
-
-    int today = get_today();
-    if (today > 0) write_index_date(today);
-    ESP_LOGI(TAG, "Updated: %d images, date=%d", ok, today);
-    return true;
 }
 
 // ── Load & display ──────────────────────────────────────────
@@ -485,18 +426,9 @@ void AlbumApp::check_daily_update(void)
     if (today == 0) return;  // no RTC
 
     if (today > _last_update_date) {
-        ESP_LOGI(TAG, "New day (%d > %d), updating images...", today, _last_update_date);
-        if (update_images()) {
-            _total_images = scan_folder_images();
-            _last_update_date = today;
-            if (_total_images > 0) {
-                _current_idx = 1;
-                load_and_show(_current_idx);
-                _last_slide_ms = esp_timer_get_time() / 1000;
-            }
-        } else {
-            ESP_LOGW(TAG, "Update failed, using existing images");
-        }
+        ESP_LOGI(TAG, "New day (%d > %d), refreshing", today, _last_update_date);
+        _last_update_date = today;
+        refresh_all_images();
     }
 }
 
@@ -539,6 +471,8 @@ bool AlbumApp::init()
     _last_slide_ms = 0;
     _last_date_check_ms = 0;
     _filter_idx = 1;
+    _dl_pending = false;
+    _dl_in_progress = false;
     _img_buf = nullptr;
     _decoded_buf = nullptr;
 
@@ -558,22 +492,29 @@ bool AlbumApp::init()
 
     _last_update_date = read_index_date();
     _total_images = scan_folder_images();
-    ESP_LOGI(TAG, "Last update: %d, images: %d", _last_update_date, _total_images);
 
-    // Download if no images at all
-    if (_total_images == 0) {
-        ESP_LOGI(TAG, "No images, downloading 10...");
-        if (update_images()) {
-            _total_images = scan_folder_images();
-            _last_update_date = get_today();
-        }
-    }
-
+    // 1. Show cached image immediately (user sees picture right away)
     if (_total_images > 0) {
         _current_idx = 1;
         load_and_show(_current_idx);
         _last_slide_ms = esp_timer_get_time() / 1000;
+    }
+
+    // 2. No images → use unified refresh (dl 1 → show → queue rest)
+    if (_total_images == 0) {
+        refresh_all_images();
     } else {
+        int today = get_today();
+        if (today > _last_update_date) {
+            ESP_LOGI(TAG, "New day (%d > %d), queuing download", today, _last_update_date);
+            _dl_pending = true;  // download in update() — no blocking
+        } else {
+            ESP_LOGI(TAG, "Images up to date (%d)", _last_update_date);
+        }
+    }
+
+    // Show "No Images" only if truly nothing
+    if (_total_images == 0) {
         g_canvas->fillScreen(TFT_WHITE);
         g_canvas->setTextColor(TFT_RED);
         g_canvas->setFont(&fonts::Font4);
@@ -595,11 +536,49 @@ void AlbumApp::deinit()
 
 void AlbumApp::start() { _running = true; }
 void AlbumApp::stop()  { _running = false; }
-void AlbumApp::refresh() { _needs_refresh = true; }
+void AlbumApp::refresh() { _dl_pending = true; }
+
+void AlbumApp::run_pending_download(void)
+{
+    if (!_dl_pending || _dl_in_progress) return;
+    _dl_in_progress = true;
+
+    // Only download missing images (don't delete existing)
+    if (_total_images < ALBUM_MAX_IMAGES) {
+        ESP_LOGI(TAG, "Downloading %d..%d ...", _total_images + 1, ALBUM_MAX_IMAGES);
+        led_async_breath_forever(0, 0, 255);
+
+        if (wifi_ensure_connected()) {
+            int start = _total_images + 1;
+            for (int i = start; i <= ALBUM_MAX_IMAGES; i++) {
+                if (download_one(i)) _total_images = i;
+                else break;
+            }
+        } else {
+            ESP_LOGW(TAG, "WiFi failed — deferring download");
+        }
+    }
+
+    // If we got all 10, mark done, update index, show first new image
+    if (_total_images >= ALBUM_MAX_IMAGES) {
+        int today = get_today();
+        if (today > 0) write_index_date(today);
+        _dl_pending = false;
+        _current_idx = 1;
+        load_and_show(_current_idx);
+        _last_slide_ms = esp_timer_get_time() / 1000;
+        ESP_LOGI(TAG, "Download complete, showing image 1");
+    }
+
+    _dl_in_progress = false;
+}
 
 void AlbumApp::update()
 {
     if (!_running) return;
+
+    // Run deferred download first (if queued in init)
+    run_pending_download();
 
     if (_sd_mounted) {
         check_auto_advance();
@@ -619,24 +598,26 @@ void AlbumApp::update()
 
 void AlbumApp::handle_buttons()
 {
+    // UP + DOWN held together → provisioning
+    if (BTN_UP.isPressed() && BTN_DOWN.isPressed()) {
+        if (!_dl_in_progress) {  // debounce
+            _dl_in_progress = true;
+            ESP_LOGI(TAG, "UP+DOWN: provisioning");
+            wifi_mgr_trigger_provisioning();
+            vTaskDelay(pdMS_TO_TICKS(500));  // prevent re-trigger
+            _dl_in_progress = false;
+        }
+        return;
+    }
+
     if (_sd_mounted) {
-        // SD mode: slideshow with prev/next
         if (BTN_UP.wasClicked()) { show_prev(); }
         if (BTN_DOWN.wasClicked()) { show_next(); }
         if (BTN_TOP.wasHold()) {
-            ESP_LOGI(TAG, "TOP hold: re-download 10 images");
-            if (update_images()) {
-                _total_images = scan_folder_images();
-                _last_update_date = get_today();
-                if (_total_images > 0) {
-                    _current_idx = 1;
-                    load_and_show(_current_idx);
-                    _last_slide_ms = esp_timer_get_time() / 1000;
-                }
-            }
+            ESP_LOGI(TAG, "TOP hold: refresh");
+            refresh_all_images();
         }
     } else {
-        // No-SD mode: single image, TOP refreshes
         if (BTN_TOP.wasHold()) {
             ESP_LOGI(TAG, "TOP hold: refresh 1 image");
             fetch_and_show_one();

@@ -5,6 +5,8 @@
  * Falls back to existing images if no network.
  * index.txt records last update date (YYYYMMDD).
  * TOP long press forces manual update.
+ *
+ * On boot: shows cached image immediately, then downloads new ones.
  */
 
 #pragma once
@@ -26,7 +28,6 @@ public:
 
 private:
     volatile bool _running   = false;
-    bool _needs_refresh      = false;
 
     // Slideshow state
     int   _current_idx       = 1;    // 1..10
@@ -36,6 +37,10 @@ private:
     // Daily update tracking
     int  _last_update_date   = 0;    // from index.txt (YYYYMMDD)
     uint64_t _last_date_check_ms = 0;
+
+    // Deferred download
+    bool  _dl_pending        = false; // download queued, will run in update()
+    bool  _dl_in_progress    = false; // download currently happening
 
     // JPEG + decoded buffer
     uint8_t* _img_buf        = nullptr;
@@ -61,7 +66,7 @@ private:
     int  get_today(void);
 
     // Download
-    bool update_images(void);
+    void refresh_all_images(void);   // unified: del → dl 1 → show → queue rest
     bool download_one(int index);
     bool fetch_and_show_one(void);   // no-SD: fetch 1, show immediately
 
@@ -74,6 +79,7 @@ private:
     void show_prev(void);
     void check_auto_advance(void);
     void check_daily_update(void);
+    void run_pending_download(void);
 
     void handle_buttons(void);
 };

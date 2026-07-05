@@ -48,14 +48,17 @@ Full build/flash guide: `docs/build-guide.md`
 
 ```
 main/
-├── main.cpp              — Entry point, picks one app to run
+├── main.cpp              — Entry point, runs AlbumApp
 ├── hal/
 │   ├── hal.h/cpp         — pc_hal_* API: init, EPD, battery, SHT40, deep sleep
-│   └── led_driver.h/cpp  — LED control wrapper
+│   ├── spi_bus.h/cpp     — SPI2_HOST arbiter (mutex: EPD vs SD card)
+│   ├── sd_card.h/cpp     — SD card mount/unmount/lock/unlock
+│   ├── led_driver.h/cpp  — LED control wrapper
+│   └── button.h          — BTN_UP/DOWN/TOP aliases
 ├── apps/
-│   ├── album/            — Network photo album (current main)
-│   │   ├── album_app.h   — Lifecycle: init/deinit/start/stop/update/refresh
-│   │   └── album_app.cpp — WiFi connect + HTTP fetch + JPEG drawJpg() + buttons
+│   ├── album/            — Daily photo slideshow (current main)
+│   │   ├── album_app.h   — Lifecycle + slideshow state
+│   │   └── album_app.cpp — SD cache, WiFi update, JPEG decode, EPD display
 │   ├── news/             — RSS news reader
 │   │   ├── news_app.{h,cpp}    — Lifecycle + main logic
 │   │   ├── news_fetcher.{h,cpp} — HTTP download wrapper
@@ -80,10 +83,11 @@ class MyApp {
 
 ### HAL API (`pc_hal_*`)
 ```c
-void pc_hal_init(void);           // I2C → M5.begin() → Canvas → PMU → power rails
+void pc_hal_init(void);           // I2C → M5.begin() → Canvas → PMU → power rails → spi_bus_init()
 void pc_hal_update(void);         // M5.update()
 M5Canvas* g_canvas;               // off-screen canvas in PSRAM
-void pc_hal_display(void);        // pushSprite + display()
+void pc_hal_display(void);        // pushSprite(0,0) — no SPI lock, no display()
+void pc_hal_epd_refresh(void);    // pushSprite + display() with SPI claim/release
 uint16_t pc_hal_read_battery_mv(void);
 float pc_hal_battery_pct(void);
 bool pc_hal_is_charging(void);
@@ -92,6 +96,23 @@ void pc_hal_deep_sleep(void);
 bool pc_hal_read_sht40(float* temp_c, float* humidity);
 void pc_hal_draw_splash(void);
 void pc_hal_show_power_info(void);
+```
+
+### SPI Bus Arbiter (`spi_bus_*`)
+```c
+void spi_bus_init(void);                        // create mutex (called in pc_hal_init)
+bool spi_bus_claim(spi_owner_t owner, uint32_t timeout_ms);  // OWNER_EPD / OWNER_SD
+void spi_bus_release(void);
+```
+
+### SD Card (`sd_card_*`)
+```c
+bool sd_card_mount(void);        // power on + mount FatFS at /sd
+void sd_card_unmount(void);      // sync + power off
+bool sd_card_detect(void);       // check physical presence
+bool sd_card_mounted(void);      // check mount state
+bool sd_card_lock(uint32_t timeout_ms);   // claim SPI for SD operations
+void sd_card_unlock(void);       // release SPI after SD
 ```
 
 ## Hardware Rules
@@ -107,7 +128,8 @@ void pc_hal_show_power_info(void);
 
 ### Key Constraints
 - **EPD must be powered** before any display operation (PYG0)
-- **EPD + SD share SPI** (CLK=G15, MOSI=G13) — never assert both CS simultaneously
+- **EPD + SD share SPI2_HOST** (CLK=G15, MOSI=G13, MISO=G14) — use `spi_bus_claim/release` for coordination
+- **SD card power** controlled by M5PM1 PYG3 (PY_SD_PWR_EN), set HIGH in `pc_hal_init()`
 - **Single I2C bus** for ALL devices: ES8311(0x18), ES7210(0x40), M5PM1(0x6e), RX8130CE(0x32), SHT40(0x44)
 - **RGB LED** single-wire G21, SK6812/WS2812 via `M5.Led`
 - **Buttons** active-low, internal pull-up: A=G10, B=G9, C=G1, PWR=G0
@@ -128,17 +150,23 @@ void pc_hal_show_power_info(void);
 - LED breathing: slow blue (connecting), green 3s (success), fast blue (provisioning)
 - Button: BTN-B (G9) long press 3s → provisioning; BTN-C (G1) long press 5s → sleep
 
-Note: Current P0 apps (album, news) use independent hardcoded WiFi (not yet migrated to wifi_manager).
+Note: Album app uses `wifi_manager` (NVS-saved networks + hardcoded fallback). News app still uses independent hardcoded WiFi.
 
 ## Current Apps
 
-### Album (Network Photo Album)
+### Album (Daily Photo Slideshow)
 - `main/main.cpp` runs this app
-- Fetch: `https://random.MoeJue.cn/randbg?type=mobile&size=0` → 302 redirect → JPEG
-- Uses `esp_http_client` with browser User-Agent, 5 max redirects, 30s timeout
-- Rendering: `g_canvas->drawJpg()` fullscreen, no UI chrome
-- DNS: hardcoded 114.114.114.114 after WiFi connect
-- Key config: `IMAGE_URL` in `album_app.cpp`
+- **Dual mode**: with SD card (10-image slideshow) / without SD (single image)
+- **SD mode**: stores `/sd/album/1..10.jpg` + `index.txt` (date of last update)
+  - Shows cached image immediately on boot, then checks for daily update
+  - Daily update: download 1 new image → show → queue rest 9 in background
+  - TOP long press: re-download all 10 (same incremental pattern)
+  - Auto-advance every 30min, UP/DOWN for manual navigation
+  - UP+DOWN held together → WiFi provisioning captive portal
+- **No-SD mode**: fetch 1 image via HTTP, display, auto-refresh every 30min
+- WiFi: uses `wifi_manager` (NVS-backed saved networks) with hardcoded fallback
+- Fetch: `https://bing.img.run/rand_1366x768.php` → 302 redirect → JPEG
+- Rendering: `esp_new_jpeg` decode → Floyd-Steinberg dither → EPD
 
 ### News (RSS Reader)
 - Uses 少数派(sspai) RSS feed: `https://sspai.com/feed`
