@@ -32,7 +32,22 @@ static const char* TAG = "Album";
 #define CHECK_INTERVAL_MS  (60ULL * 60 * 1000)   // 1 hour — how often to check if day changed
 
 // ── WiFi config from SD (/sd/wifi.txt) ─────────────────────
-// Format: first line = SSID, second line = password
+// Format: line 1 = SSID, line 2 = password, line 3 = DNS (optional)
+
+static void led_no_network(void)
+{
+    led_async_flash(255, 120, 0, 4);  // orange flash ~2s
+}
+
+static void led_failure(void)
+{
+    led_async_flash(255, 0, 0, 4);    // red flash ~2s
+}
+
+static void led_success(void)
+{
+    led_async_flash(0, 255, 0, 4);    // green flash ~2s
+}
 
 static char s_dns_str[32] = "114.114.114.114";  // default DNS, overridable via wifi.txt
 
@@ -57,7 +72,12 @@ static bool load_wifi_from_sd(void)
 
     if (strlen(dns) > 0) {
         dns[strcspn(dns, "\r\n")] = '\0';
-        if (strlen(dns) > 0) strncpy(s_dns_str, dns, sizeof(s_dns_str) - 1);
+        if (strlen(dns) > 0) {
+            size_t n = strlen(dns);
+            if (n >= sizeof(s_dns_str)) n = sizeof(s_dns_str) - 1;
+            memcpy(s_dns_str, dns, n);
+            s_dns_str[n] = '\0';
+        }
     }
 
     ESP_LOGI(TAG, "WiFi loaded from SD: %s (DNS: %s)", ssid, s_dns_str);
@@ -91,25 +111,17 @@ static void set_dns(void)
 
 static bool wifi_ensure_connected(void)
 {
+    // Already connected
     if (wifi_mgr_get_state() == WIFI_STATE_STA_OK) return true;
 
-    // 1. Try saved networks (NVS, from provisioning or previous SD load)
+    ESP_LOGI(TAG, "Connecting WiFi (15s timeout)...");
     if (wifi_mgr_connect_sta(15000)) {
         set_dns();
-        save_wifi_to_sd();   // persist to SD
+        ESP_LOGI(TAG, "WiFi connected");
         return true;
     }
 
-    // 2. Try SD card wifi.txt
-    if (load_wifi_from_sd() && wifi_mgr_connect_sta(15000)) {
-        set_dns();
-        save_wifi_to_sd();
-        return true;
-    }
-
-    // 3. All failed — start AP provisioning
-    ESP_LOGW(TAG, "No WiFi config, starting AP provisioning...");
-    wifi_mgr_trigger_provisioning();
+    ESP_LOGW(TAG, "WiFi not available");
     return false;
 }
 
@@ -337,12 +349,17 @@ bool AlbumApp::download_one(int index)
     snprintf(path, sizeof(path), "%s/%d.jpg", ALBUM_DIR, index);
     ESP_LOGI(TAG, "DL %d/%d → %s", index, ALBUM_MAX_IMAGES, path);
 
-    led_async_breath_forever(0, 0, 255);
+    if (!wifi_ensure_connected()) {
+        led_no_network();
+        return false;
+    }
+
+    led_async_breath_forever(0, 0, 255); // blue: downloading
 
     uint8_t* jpeg = nullptr;
     size_t len = 0;
     if (!http_fetch_one("https://bing.img.run/rand_1366x768.php", &jpeg, &len)) {
-        led_async_flash(255, 0, 0, 3);  // red: HTTP failed
+        led_failure();
         return false;
     }
 
@@ -353,7 +370,7 @@ bool AlbumApp::download_one(int index)
     sd_card_unlock();
 
     free(jpeg);
-    led_async_flash(0, 255, 0, 1);
+    led_success();
     vTaskDelay(pdMS_TO_TICKS(300));
     return true;
 }
@@ -486,25 +503,23 @@ void AlbumApp::check_daily_update(void)
 
 bool AlbumApp::fetch_and_show_one(void)
 {
-    led_async_breath_forever(255, 165, 0);  // orange: WiFi
-
     if (!wifi_ensure_connected()) {
         ESP_LOGE(TAG, "No WiFi — can't fetch image");
-        led_async_flash(255, 0, 0, 3);      // red
+        led_no_network();
         return false;
     }
 
-    led_async_breath_forever(0, 0, 255);    // blue: HTTP
+    led_async_breath_forever(0, 0, 255);    // blue: downloading
 
     uint8_t* jpeg = nullptr;
     size_t len = 0;
     if (!http_fetch_one("https://bing.img.run/rand_1366x768.php", &jpeg, &len)) {
         ESP_LOGE(TAG, "HTTP fetch failed");
-        led_async_flash(255, 0, 0, 3);
+        led_failure();
         return false;
     }
 
-    led_async_flash(0, 255, 0, 3);          // green: decode
+    led_success();                           // green 2s: ready to decode
 
     bool ok = decode_and_render(jpeg, len);
     free(jpeg);
@@ -606,7 +621,7 @@ void AlbumApp::run_pending_download(void)
             }
         } else {
             ESP_LOGW(TAG, "WiFi failed — deferring download");
-            led_async_flash(255, 0, 0, 3);  // red: no network
+            led_no_network();
         }
     }
 
@@ -651,12 +666,20 @@ void AlbumApp::handle_buttons()
 {
     // UP + DOWN held together → provisioning
     if (BTN_UP.isPressed() && BTN_DOWN.isPressed()) {
-        if (!_dl_in_progress) {  // debounce
-            _dl_in_progress = true;
-            ESP_LOGI(TAG, "UP+DOWN: provisioning");
-            wifi_mgr_trigger_provisioning();
-            vTaskDelay(pdMS_TO_TICKS(500));  // prevent re-trigger
-            _dl_in_progress = false;
+        if (!_btn_busy) {
+            _btn_busy = true;
+            // Try wifi.txt from SD first
+            if (load_wifi_from_sd() && wifi_mgr_connect_sta(15000)) {
+                set_dns();
+                save_wifi_to_sd();
+                ESP_LOGI(TAG, "Connected via SD wifi.txt");
+            } else {
+                ESP_LOGI(TAG, "UP+DOWN: AP provisioning");
+                led_async_breath_forever(255, 200, 0);  // yellow: provisioning
+                wifi_mgr_trigger_provisioning();
+            }
+            vTaskDelay(pdMS_TO_TICKS(500));
+            _btn_busy = false;
         }
         return;
     }

@@ -41,6 +41,7 @@ private:
     // Deferred download
     bool  _dl_pending        = false; // download queued, will run in update()
     bool  _dl_in_progress    = false; // download currently happening
+    bool  _btn_busy          = false; // button debounce
 
     // JPEG + decoded buffer
     uint8_t* _img_buf        = nullptr;
