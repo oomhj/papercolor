@@ -12,6 +12,8 @@
 
 #include "hal.h"
 #include "config.h"
+#include <M5PM1.h>
+M5PM1* s_pmu = NULL;
 #include <cstdio>
 #include <esp_log.h>
 #include <esp_timer.h>
@@ -86,14 +88,14 @@ void pc_hal_init(void)
              M5.Display.width(), M5.Display.height(),
              M5.Display.getColorDepth());
 
-    // ── M5PM1 Power Management ──
-    M5PM1 pmu;
-    pmu.begin(&M5.In_I2C, M5PM1_DEFAULT_ADDR, M5PM1_I2C_FREQ_100K);
-    pmu.setI2cConfig(0);
+    // ── M5PM1 Power Management (shared instance) ──
+    s_pmu = new M5PM1();
+    s_pmu->begin(&M5.In_I2C, M5PM1_DEFAULT_ADDR, M5PM1_I2C_FREQ_100K);
+    s_pmu->setI2cConfig(0);
 
     // EPD power rail on (PYG0 / PY_EPD_EN)
-    pmu.pinMode(M5PM1_GPIO_NUM_0, OUTPUT);
-    pmu.digitalWrite(M5PM1_GPIO_NUM_0, HIGH);
+    s_pmu->pinMode(M5PM1_GPIO_NUM_0, OUTPUT);
+    s_pmu->digitalWrite(M5PM1_GPIO_NUM_0, HIGH);
 
     // Audio codec power on (G45) — use ESP-IDF GPIO
     gpio_set_direction((gpio_num_t)PIN_AUDIO_PWR_EN, GPIO_MODE_OUTPUT);
@@ -104,14 +106,14 @@ void pc_hal_init(void)
     gpio_set_level((gpio_num_t)PIN_SPK_EN, 0);
 
     // Enable charging + boost
-    pmu.setChargeEnable(true);
-    pmu.setBoostEnable(true);
+    s_pmu->setChargeEnable(true);
+    s_pmu->setBoostEnable(true);
 
     // Check battery — shutdown if critically low (< 3.1V)
     uint16_t battery_mv = 0;
-    if (pmu.readVbat(&battery_mv) == M5PM1_OK && battery_mv < 3100) {
+    if (s_pmu->readVbat(&battery_mv) == M5PM1_OK && battery_mv < 3100) {
         ESP_LOGE(TAG, "Battery critically low (%dmV), shutting down", battery_mv);
-        pmu.shutdown();
+        s_pmu->shutdown();
         while (true) { vTaskDelay(pdMS_TO_TICKS(1000)); }
     }
 
@@ -128,10 +130,7 @@ void pc_hal_update(void)
 void pc_hal_display(void)
 {
     if (g_canvas) {
-        spi_bus_acquire(SPI_OWNER_EPD);
         g_canvas->pushSprite(0, 0);
-        M5.Display.display();
-        spi_bus_release();
     }
 }
 
@@ -139,10 +138,8 @@ void pc_hal_display(void)
 
 uint16_t pc_hal_read_battery_mv(void)
 {
-    M5PM1 pmu;
     uint16_t mv = 0;
-    pmu.begin(&M5.In_I2C, M5PM1_DEFAULT_ADDR, M5PM1_I2C_FREQ_100K);
-    if (pmu.readVbat(&mv) == M5PM1_OK) {
+    if (s_pmu->readVbat(&mv) == M5PM1_OK) {
         return mv;
     }
     return 0;
@@ -160,10 +157,8 @@ float pc_hal_battery_pct(void)
 
 bool pc_hal_is_charging(void)
 {
-    M5PM1 pmu;
-    pmu.begin(&M5.In_I2C, M5PM1_DEFAULT_ADDR, M5PM1_I2C_FREQ_100K);
     m5pm1_pwr_src_t src = M5PM1_PWR_SRC_UNKNOWN;
-    if (pmu.getPowerSource(&src) == M5PM1_OK) {
+    if (s_pmu->getPowerSource(&src) == M5PM1_OK) {
         return (src == M5PM1_PWR_SRC_5VIN || src == M5PM1_PWR_SRC_5VINOUT);
     }
     return false;
@@ -171,10 +166,8 @@ bool pc_hal_is_charging(void)
 
 void pc_hal_set_epd_power(bool on)
 {
-    M5PM1 pmu;
-    pmu.begin(&M5.In_I2C, M5PM1_DEFAULT_ADDR, M5PM1_I2C_FREQ_100K);
-    pmu.pinMode(M5PM1_GPIO_NUM_0, OUTPUT);
-    pmu.digitalWrite(M5PM1_GPIO_NUM_0, on ? HIGH : LOW);
+    s_pmu->pinMode(M5PM1_GPIO_NUM_0, OUTPUT);
+    s_pmu->digitalWrite(M5PM1_GPIO_NUM_0, on ? HIGH : LOW);
 }
 
 void pc_hal_deep_sleep(void)

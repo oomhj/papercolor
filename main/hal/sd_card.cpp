@@ -13,7 +13,9 @@
 #include <esp_vfs_fat.h>
 #include <sdmmc_cmd.h>
 #include <driver/sdspi_host.h>
+
 #include <M5PM1.h>
+extern M5PM1* s_pmu;  // shared PMU instance (initialized in hal.cpp)
 
 static const char* TAG = "SDCard";
 
@@ -33,37 +35,24 @@ static const char* TAG = "SDCard";
 static bool s_mounted = false;
 static sdmmc_card_t* s_card = NULL;
 
-// ── Power control (M5PM1) ───────────────────────────────────
-
-static M5PM1& get_pmu()
-{
-    static M5PM1 pmu;
-    static bool inited = false;
-    if (!inited) {
-        pmu.begin(&M5.In_I2C, M5PM1_DEFAULT_ADDR, M5PM1_I2C_FREQ_100K);
-        inited = true;
-    }
-    return pmu;
-}
+// ── Power control (M5PM1 via shared instance) ────────────────
 
 static void sd_power(bool on)
 {
-    auto& pmu = get_pmu();
-    pmu.pinMode(SD_PWR_PMU, M5PM1_GPIO_MODE_OUTPUT);
-    pmu.digitalWrite(SD_PWR_PMU, on ? HIGH : LOW);
-    vTaskDelay(pdMS_TO_TICKS(50));  // let power stabilize
+    s_pmu->pinMode(SD_PWR_PMU, M5PM1_GPIO_MODE_OUTPUT);
+    s_pmu->digitalWrite(SD_PWR_PMU, on ? HIGH : LOW);
+    vTaskDelay(pdMS_TO_TICKS(50));
 }
 
 static bool sd_detect(void)
 {
-    auto& pmu = get_pmu();
     // Enable detect circuit: PYG4 = PY_SD_DET_EN
-    pmu.pinMode(SD_DET_EN_PMU, M5PM1_GPIO_MODE_OUTPUT);
-    pmu.digitalWrite(SD_DET_EN_PMU, HIGH);
+    s_pmu->pinMode(SD_DET_EN_PMU, M5PM1_GPIO_MODE_OUTPUT);
+    s_pmu->digitalWrite(SD_DET_EN_PMU, HIGH);
     vTaskDelay(pdMS_TO_TICKS(5));
     // Read card detect: PYG1 = CARD_DEC, active-low
-    pmu.pinMode(SD_DET_PMU, M5PM1_GPIO_MODE_INPUT);
-    bool present = (pmu.digitalRead(SD_DET_PMU) == LOW);
+    s_pmu->pinMode(SD_DET_PMU, M5PM1_GPIO_MODE_INPUT);
+    bool present = (s_pmu->digitalRead(SD_DET_PMU) == LOW);
     ESP_LOGI(TAG, "card detect: %s", present ? "present" : "absent");
     return present;
 }
