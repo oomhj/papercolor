@@ -20,6 +20,7 @@
 #include <sys/stat.h>
 #include <esp_log.h>
 #include <esp_timer.h>
+#include <esp_sleep.h>
 #include <esp_heap_caps.h>
 #include <esp_netif.h>
 #include <esp_jpeg_dec.h>
@@ -539,19 +540,20 @@ static uint64_t s_last_activity_ms = 0;
 
 void AlbumApp::go_to_sleep(void)
 {
-    // Check battery — if low, shutdown permanently (no wake)
+    // Check battery — if low, permanent shutdown
     if (bat_is_low()) {
-        ESP_LOGW(TAG, "Battery low (%u%%), shutting down", bat_get_pct());
+        ESP_LOGW(TAG, "Battery low (%u%%), shutting down permanently", bat_get_pct());
         pc_hal_rtc_ram_write(0, (uint8_t)_current_idx);
         pc_hal_rtc_ram_write(1, (uint8_t)(_last_update_date & 0xFF));
         pc_hal_rtc_ram_write(2, (uint8_t)((_last_update_date >> 8) & 0xFF));
         if (_sd_mounted) { sd_card_unmount(); _sd_mounted = false; }
-        pc_hal_power_off_scheduled(0);  // shutdown, no RTC wake
+        pc_hal_deep_sleep();  // deep sleep, no timer wake
+        return;
     }
 
-    ESP_LOGI(TAG, "Low-power sleep (%u%%)", bat_get_pct());
+    ESP_LOGI(TAG, "Deep sleep (%u%%), wake in 30 min or button", bat_get_pct());
 
-    // Save slide index to RTC RAM
+    // Save state to RTC RAM
     pc_hal_rtc_ram_write(0, (uint8_t)_current_idx);
     pc_hal_rtc_ram_write(1, (uint8_t)(_last_update_date & 0xFF));
     pc_hal_rtc_ram_write(2, (uint8_t)((_last_update_date >> 8) & 0xFF));
@@ -559,8 +561,15 @@ void AlbumApp::go_to_sleep(void)
     // Unmount SD
     if (_sd_mounted) { sd_card_unmount(); _sd_mounted = false; }
 
-    // Power off, wake in 30 min
-    pc_hal_power_off_scheduled(30);
+    // Deep sleep with RTC timer (30 min) + button wake (ext1 on G0/G1/G9/G10)
+    M5.Display.sleep();
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+    esp_sleep_enable_timer_wakeup(30ULL * 60 * 1000000);  // 30 min
+    esp_sleep_enable_ext1_wakeup((1ULL << 0) | (1ULL << 1) | (1ULL << 9) | (1ULL << 10),
+                                  ESP_EXT1_WAKEUP_ANY_LOW);
+    esp_deep_sleep_start();
 }
 
 // ── Lifecycle ───────────────────────────────────────────────
@@ -598,12 +607,10 @@ bool AlbumApp::init()
     if (!_sd_mounted) {
         ESP_LOGI(TAG, "No SD card — single-image mode");
         if (rtc_wake) {
-            // RTC wake: download 1 new image
-            fetch_and_show_one();
+            fetch_and_show_one();  // new image every 30min
             go_to_sleep();
-        } else {
-            fetch_and_show_one();
         }
+        // Button wake: EPD shows old image, don't refresh
         return true;
     }
 
@@ -611,14 +618,14 @@ bool AlbumApp::init()
     ensure_album_folder();
 
     if (!rtc_wake) {
-        // Normal (button) wake: use existing init logic
+        // Button wake: EPD already shows the last image, don't refresh
         _last_update_date = read_index_date();
         _total_images = scan_folder_images();
 
         if (_total_images > 0) {
-            _current_idx = 1;
-            load_and_show(_current_idx);
+            _current_idx = 1;  // reset index, user can navigate with buttons
             _last_slide_ms = esp_timer_get_time() / 1000;
+            ESP_LOGI(TAG, "Wake %d images available", _total_images);
         }
 
         if (_total_images == 0) {
@@ -629,14 +636,6 @@ bool AlbumApp::init()
                 ESP_LOGI(TAG, "New day (%d > %d), queuing download", today, _last_update_date);
                 _dl_pending = true;
             }
-        }
-
-        if (_total_images == 0) {
-            g_canvas->fillScreen(TFT_WHITE);
-            g_canvas->setTextColor(TFT_RED);
-            g_canvas->setFont(&fonts::Font4);
-            g_canvas->drawString("No Images", (400 - 140) / 2, 600 / 2 - 14);
-            pc_hal_epd_refresh();
         }
     } else {
         // RTC wake: advance to next image

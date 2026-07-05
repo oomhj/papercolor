@@ -21,7 +21,6 @@ static uint64_t s_last_read_ms = 0;
 static bool     s_cache_valid  = false;
 
 #define READ_INTERVAL_MS  (30ULL * 1000)  // read from PMU every 30s
-#define LOG_INTERVAL_MS   (60ULL * 1000)  // print log every 60s
 
 // ── Internal read ───────────────────────────────────────────
 
@@ -77,14 +76,7 @@ bool bat_is_charging(void)
 
 void bat_update(void)
 {
-    static uint64_t s_last_log_ms = 0;
-    uint64_t now = esp_timer_get_time() / 1000;
-
-    read_battery();  // always refresh
-
-    if (now - s_last_log_ms < LOG_INTERVAL_MS) return;
-    s_last_log_ms = now;
-
+    read_battery();  // cached at 30s internally
     ESP_LOGI(TAG, "%u%% %umV%s", s_last_pct, s_last_mv, s_last_chg ? " CHG" : "");
 }
 
