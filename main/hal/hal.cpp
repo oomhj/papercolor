@@ -69,10 +69,7 @@ void pc_hal_init(void)
         i2c_bus_recovery();
     }
 
-    // Init shared SPI bus before M5.begin() so M5GFX reuses it with MISO
-    spi_bus_init();
-
-    // M5 Unified init (I2C, buttons, display driver)
+    // M5 Unified init (I2C, buttons, display driver, SPI bus)
     auto cfg          = M5.config();
     cfg.clear_display = false;
     M5.begin(cfg);
