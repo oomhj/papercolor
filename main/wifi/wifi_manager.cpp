@@ -8,7 +8,6 @@
 #include "wifi_manager.h"
 #include "wifi_provisioning.h"
 #include "hal/button.h"
-#include "hal/led_driver.h"
 #include <cstdio>
 #include <cstring>
 #include <esp_log.h>
@@ -42,28 +41,13 @@ static void set_state(wifi_state_t new_state)
     if (old == new_state) return;
     s_state = new_state;
     ESP_LOGI(TAG, "state: %d -> %d", old, new_state);
-    wifi_mgr_update_led();
+    // LED managed by app layer (album_app) — not here
     if (s_callback) s_callback(old, new_state);
 }
 
 void wifi_mgr_update_led(void)
 {
-    switch (s_state) {
-        case WIFI_STATE_STA_CN:
-            led_async_breath_forever(0, 0, 255);        break;  // blue breathing
-        case WIFI_STATE_STA_OK:
-            led_async_color(0, 255, 0);                 break;  // green
-        case WIFI_STATE_STA_FAIL:
-            led_async_flash(255, 0, 0, 3);              break;  // red flash 3×
-        case WIFI_STATE_STA_LOST:
-            led_async_flash(255, 100, 0, 10);           break;  // orange flash
-        case WIFI_STATE_AP_IDLE:
-            led_async_flash_forever(255, 255, 0);       break;  // yellow flash
-        case WIFI_STATE_AP_CFG:
-            led_async_color(0, 100, 255);               break;  // cyan
-        default:
-            led_async_stop();                           break;
-    }
+    // LED managed by app layer — no-op
 }
 
 // ── Event handler ────────────────────────────────────────────
@@ -305,13 +289,11 @@ static void retry_task_func(void* param)
         ESP_LOGI(TAG, "Retry %d/%d", attempt + 1, max_attempts);
         set_state(WIFI_STATE_STA_CN);
 
-        led_async_breath_forever(0, 0, 255);  // blue breath while waiting
         uint32_t wait_end = esp_timer_get_time() / 1000 +
                            ((attempt > 0) ? delays[attempt - 1] : 0);
         while (esp_timer_get_time() / 1000 < wait_end && !s_retry_abort) {
             vTaskDelay(pdMS_TO_TICKS(100));
         }
-        led_async_stop();
         if (s_retry_abort) break;
 
         // Try each saved slot
@@ -409,17 +391,15 @@ static bool     s_btn_up_triggered  = false;
 
 bool wifi_mgr_handle_buttons(void)
 {
-    // BTN_TOP (G1): long press 3s → provisioning
+    // BTN_TOP (G1): long press 3s → provisioning (LED managed by app)
     if (BTN_TOP.isPressed()) {
         if (!s_btn_up_pressed_ms) {
             s_btn_up_pressed_ms = esp_timer_get_time() / 1000;
             s_btn_up_triggered  = false;
-            led_set_color(0, 0, 255);  // blue: preparing
         }
         uint32_t elapsed = (esp_timer_get_time() / 1000) - s_btn_up_pressed_ms;
         if (elapsed >= 3000 && !s_btn_up_triggered) {
             s_btn_up_triggered = true;
-            led_set_color(0, 255, 0);  // green: confirmed
             vTaskDelay(pdMS_TO_TICKS(200));
             ESP_LOGI(TAG, "BTN_TOP long press: provisioning");
             wifi_mgr_trigger_provisioning();

@@ -33,8 +33,9 @@ static const char* TAG = "Album";
 #define SLIDE_INTERVAL_MS  (30ULL * 60 * 1000)   // 30 min
 #define CHECK_INTERVAL_MS  (60ULL * 60 * 1000)   // 1 hour — how often to check if day changed
 
-// ── WiFi config from SD (/sd/wifi.txt) ─────────────────────
-// Format: line 1 = SSID, line 2 = password, line 3 = DNS (optional)
+// ── Config file (/sd/album/config.txt) ──────────────────────
+// Key=value format.  Also reads legacy /sd/wifi.txt for backward compat.
+// Keys: ssid, pass, dns, updated
 
 static void led_no_network(void)
 {
@@ -51,38 +52,94 @@ static void led_success(void)
     led_async_flash(0, 255, 0, 4);    // green flash ~2s
 }
 
-static char s_dns_str[32] = "114.114.114.114";  // default DNS, overridable via wifi.txt
+static char s_dns_str[32] = "114.114.114.114";
+#define CONFIG_PATH "/sd/album/config.txt"
+
+// Read a value for key from a key=value file. Returns true if found.
+static bool config_read_val(const char* path, const char* key, char* val, size_t val_sz)
+{
+    FILE* f = fopen(path, "r");
+    if (!f) return false;
+    char line[128];
+    size_t klen = strlen(key);
+    bool found = false;
+    while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        if (strncmp(line, key, klen) == 0 && line[klen] == '=') {
+            size_t vlen = strlen(line + klen + 1);
+            if (vlen >= val_sz) vlen = val_sz - 1;
+            memcpy(val, line + klen + 1, vlen);
+            val[vlen] = '\0';
+            found = true;
+            break;
+        }
+    }
+    fclose(f);
+    return found;
+}
+
+static void config_write_val(const char* path, const char* key, const char* val)
+{
+    // Read existing lines, update or append
+    char tmp[512] = {};
+    FILE* f = fopen(path, "r");
+    if (f) {
+        char line[128];
+        while (fgets(line, sizeof(line), f))
+            strncat(tmp, line, sizeof(tmp) - strlen(tmp) - 1);
+        fclose(f);
+    }
+    // Remove old line with same key
+    char* old = strstr(tmp, key);
+    if (old) {
+        char* nl = strchr(old, '\n');
+        if (nl) memmove(old, nl + 1, strlen(nl + 1) + 1);
+        else *old = '\0';
+    }
+    // Append new
+    char newline[128];
+    snprintf(newline, sizeof(newline), "%s=%s\n", key, val);
+    strncat(tmp, newline, sizeof(tmp) - strlen(tmp) - 1);
+
+    f = fopen(path, "w");
+    if (f) { fputs(tmp, f); fclose(f); }
+}
 
 static bool load_wifi_from_sd(void)
 {
     char ssid[64] = {}, pass[64] = {}, dns[32] = {};
 
+    // Try new config.txt first, then legacy wifi.txt
     sd_card_lock(2000);
-    FILE* f = fopen("/sd/wifi.txt", "r");
-    if (!f) { sd_card_unlock(); return false; }
-
-    if (!fgets(ssid, sizeof(ssid), f) || !fgets(pass, sizeof(pass), f)) {
-        fclose(f); sd_card_unlock(); return false;
+    bool ok = config_read_val(CONFIG_PATH, "ssid", ssid, sizeof(ssid)) &&
+              config_read_val(CONFIG_PATH, "pass", pass, sizeof(pass));
+    if (!ok) {
+        // Legacy /sd/wifi.txt (line 1=SSID, line 2=pass, line 3=dns optional)
+        FILE* f = fopen("/sd/wifi.txt", "r");
+        if (f) {
+            fgets(ssid, sizeof(ssid), f);
+            fgets(pass, sizeof(pass), f);
+            fgets(dns, sizeof(dns), f);
+            fclose(f);
+            ssid[strcspn(ssid, "\r\n")] = '\0';
+            pass[strcspn(pass, "\r\n")] = '\0';
+            ok = (strlen(ssid) > 0);
+        }
+    } else {
+        config_read_val(CONFIG_PATH, "dns", dns, sizeof(dns));
     }
-    // Optional 3rd line: DNS server
-    fgets(dns, sizeof(dns), f);
-    fclose(f); sd_card_unlock();
-
-    ssid[strcspn(ssid, "\r\n")] = '\0';
-    pass[strcspn(pass, "\r\n")] = '\0';
-    if (strlen(ssid) == 0) return false;
+    sd_card_unlock();
+    if (!ok) return false;
 
     if (strlen(dns) > 0) {
         dns[strcspn(dns, "\r\n")] = '\0';
-        if (strlen(dns) > 0) {
-            size_t n = strlen(dns);
-            if (n >= sizeof(s_dns_str)) n = sizeof(s_dns_str) - 1;
-            memcpy(s_dns_str, dns, n);
-            s_dns_str[n] = '\0';
-        }
+        size_t n = strlen(dns);
+        if (n >= sizeof(s_dns_str)) n = sizeof(s_dns_str) - 1;
+        memcpy(s_dns_str, dns, n);
+        s_dns_str[n] = '\0';
     }
 
-    ESP_LOGI(TAG, "WiFi loaded from SD: %s (DNS: %s)", ssid, s_dns_str);
+    ESP_LOGI(TAG, "WiFi loaded: %s (DNS: %s)", ssid, s_dns_str);
     wifi_mgr_save_network(0, ssid, pass);
     return true;
 }
@@ -94,10 +151,11 @@ static void save_wifi_to_sd(void)
     if (strlen(ssid) == 0) return;
 
     sd_card_lock(2000);
-    FILE* f = fopen("/sd/wifi.txt", "w");
-    if (f) { fprintf(f, "%s\n%s\n%s\n", ssid, pass, s_dns_str); fclose(f); }
+    config_write_val(CONFIG_PATH, "ssid", ssid);
+    config_write_val(CONFIG_PATH, "pass", pass);
+    config_write_val(CONFIG_PATH, "dns", s_dns_str);
     sd_card_unlock();
-    ESP_LOGI(TAG, "WiFi saved to /sd/wifi.txt: %s (DNS: %s)", ssid, s_dns_str);
+    ESP_LOGI(TAG, "Config saved: %s (DNS: %s)", ssid, s_dns_str);
 }
 
 static void set_dns(void)
@@ -321,27 +379,21 @@ int AlbumApp::get_today(void)
 
 int AlbumApp::read_index_date(void)
 {
-    char path[64];
-    snprintf(path, sizeof(path), "%s/index.txt", ALBUM_DIR);
-
     sd_card_lock(2000);
-    FILE* f = fopen(path, "r");
-    if (!f) { sd_card_unlock(); return 0; }
-    int date = 0;
-    fscanf(f, "%d", &date);
-    fclose(f);
+    char buf[16] = {};
+    config_read_val(CONFIG_PATH, "updated", buf, sizeof(buf));
     sd_card_unlock();
+    int date = 0;
+    if (buf[0]) date = atoi(buf);
     return date;
 }
 
 void AlbumApp::write_index_date(int date)
 {
-    char path[64];
-    snprintf(path, sizeof(path), "%s/index.txt", ALBUM_DIR);
-
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d", date);
     sd_card_lock(2000);
-    FILE* f = fopen(path, "w");
-    if (f) { fprintf(f, "%d\n", date); fclose(f); }
+    config_write_val(CONFIG_PATH, "updated", buf);
     sd_card_unlock();
 }
 

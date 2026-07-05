@@ -276,9 +276,11 @@ static esp_err_t handle_post_config(httpd_req_t* req)
         vTaskDelay(pdMS_TO_TICKS(150));
     }
 
-    // Restart after a short delay so browser receives the response
+    // Return to STA mode (no restart needed)
     vTaskDelay(pdMS_TO_TICKS(500));
-    wifi_mgr_restart();
+    wifi_prov_stop();
+    wifi_mgr_stop_ap();
+    ESP_LOGI(TAG, "Provisioning done, returning to album");
     return ESP_OK;
 }
 
