@@ -487,27 +487,29 @@ bool AlbumApp::load_and_show(int index, bool fast)
 {
     if (index < 1) return false;
 
+    led_async_breath_forever(0, 0, 255);  // blue: loading
+
     char path[64];
     snprintf(path, sizeof(path), "%s/%d.jpg", ALBUM_DIR, index);
 
     sd_card_lock(2000);
     FILE* f = fopen(path, "r");
-    if (!f) { sd_card_unlock(); return false; }
+    if (!f) { sd_card_unlock(); led_failure(); return false; }
 
     fseek(f, 0, SEEK_END);
     long flen = ftell(f);
     fseek(f, 0, SEEK_SET);
-    if (flen <= 0 || flen > 2 * 1024 * 1024) { fclose(f); sd_card_unlock(); return false; }
+    if (flen <= 0 || flen > 2 * 1024 * 1024) { fclose(f); sd_card_unlock(); led_failure(); return false; }
 
     uint8_t* jpeg = (uint8_t*)malloc((size_t)flen);
-    if (!jpeg) { fclose(f); sd_card_unlock(); return false; }
+    if (!jpeg) { fclose(f); sd_card_unlock(); led_failure(); return false; }
 
     size_t got = fread(jpeg, 1, (size_t)flen, f);
     fclose(f);
     sd_card_unlock();
 
     if (got != (size_t)flen || got < 2 || jpeg[0] != 0xFF || jpeg[1] != 0xD8) {
-        free(jpeg); return false;
+        free(jpeg); led_failure(); return false;
     }
 
     if (_img_buf) { free(_img_buf); _img_buf = nullptr; }
@@ -517,7 +519,10 @@ bool AlbumApp::load_and_show(int index, bool fast)
 
     ESP_LOGI(TAG, "[LOAD] image %d%s", index, fast ? " fast" : "");
     bat_update();
-    return decode_and_render(_img_buf, _img_len, fast);
+
+    bool ok = decode_and_render(_img_buf, _img_len, fast);
+    if (ok) led_success(); else led_failure();
+    return ok;
 }
 
 bool AlbumApp::decode_and_render(const uint8_t* jpeg, size_t len, bool fast)
