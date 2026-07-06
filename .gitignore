@@ -20,3 +20,6 @@ managed_components/
 # OS
 .DS_Store
 Thumbs.db
+
+# M5Stack demo (reference only, not part of active project)
+m5_demo/
