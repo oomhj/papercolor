@@ -478,6 +478,12 @@ void AlbumApp::refresh_all_images(void)
         _last_slide_ms = esp_timer_get_time() / 1000;
         write_index_date(get_today());  // persist progress
         _dl_pending = true;   // 2..10 in background
+    } else {
+        // If download failed, restore total from actual files on disk
+        _total_images = scan_folder_images();
+        if (_total_images > 0) {
+            ESP_LOGI(TAG, "Refresh failed, restored %d cached images", _total_images);
+        }
     }
 }
 
