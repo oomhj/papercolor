@@ -623,7 +623,7 @@ bool AlbumApp::fetch_and_show_one(void)
 // ── Low-power sleep ─────────────────────────────────────────
 
 static uint64_t s_last_activity_ms = 0;
-#define IDLE_SLEEP_MS  (5ULL * 1000)   // 5s idle → sleep (testing)
+#define IDLE_SLEEP_MS  (60ULL * 1000)  // 60s idle → sleep
 
 void AlbumApp::go_to_sleep(void)
 {
@@ -654,7 +654,7 @@ void AlbumApp::go_to_sleep(void)
     vTaskDelay(pdMS_TO_TICKS(100));
 
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-    esp_sleep_enable_timer_wakeup(20ULL * 1000000);        // 20s for testing
+    esp_sleep_enable_timer_wakeup(30ULL * 60 * 1000000);  // 30 min
     esp_sleep_enable_ext1_wakeup((1ULL << 0) | (1ULL << 1) | (1ULL << 9) | (1ULL << 10),
                                   ESP_EXT1_WAKEUP_ANY_LOW);
     esp_deep_sleep_start();
