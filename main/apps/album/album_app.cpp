@@ -622,7 +622,7 @@ bool AlbumApp::fetch_and_show_one(void)
 // ── Low-power sleep ─────────────────────────────────────────
 
 static uint64_t s_last_activity_ms = 0;
-#define IDLE_SLEEP_MS  (60ULL * 1000)  // 60s idle → sleep
+#define IDLE_SLEEP_MS  (5ULL * 1000)   // 5s idle → sleep (testing)
 
 void AlbumApp::go_to_sleep(void)
 {
@@ -653,7 +653,7 @@ void AlbumApp::go_to_sleep(void)
     vTaskDelay(pdMS_TO_TICKS(100));
 
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-    esp_sleep_enable_timer_wakeup(30ULL * 60 * 1000000);  // 30 min
+    esp_sleep_enable_timer_wakeup(20ULL * 1000000);        // 20s for testing
     esp_sleep_enable_ext1_wakeup((1ULL << 0) | (1ULL << 1) | (1ULL << 9) | (1ULL << 10),
                                   ESP_EXT1_WAKEUP_ANY_LOW);
     esp_deep_sleep_start();
@@ -743,8 +743,8 @@ bool AlbumApp::init()
             refresh_all_images();
         }
 
-        // Go back to sleep immediately after RTC wake
-        go_to_sleep();
+        // Sleep unless there's a pending download (new day refresh)
+        if (!_dl_pending) go_to_sleep();
     }
 
     _last_date_check_ms = esp_timer_get_time() / 1000;
@@ -785,13 +785,15 @@ void AlbumApp::run_pending_download(void)
         }
     }
 
-    // All 10 downloaded — update index, but DON'T refresh display
-    // Image 1 is already shown; slideshow timer will advance at 30min
+    // All 10 downloaded — update index, go back to sleep
     if (_total_images >= ALBUM_MAX_IMAGES) {
         int today = get_today();
         if (today > 0) write_index_date(today);
         _dl_pending = false;
-        ESP_LOGI(TAG, "Download complete (10 images), slideshow continues");
+        ESP_LOGI(TAG, "Download complete (10 images), going to sleep");
+        _dl_in_progress = false;
+        go_to_sleep();   // don't wait for idle timeout
+        return;
     }
 
     _dl_in_progress = false;
