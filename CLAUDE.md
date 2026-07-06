@@ -200,11 +200,16 @@ RTC wake (daily update):
 ### LED Indicators
 | Color | Mode | Duration | Meaning |
 |-------|------|----------|---------|
-| 🔵 Blue | Breathe | Forever | Loading (WiFi/HTTP/decode) |
-| 🟡 Yellow | Breathe | Forever | AP provisioning mode |
-| 🟠 Orange | Flash | ~2s | No network |
-| 🔴 Red | Flash | ~2s | Request/decode failed |
-| 🟢 Green | Flash | ~2s | Success |
+| 🔵 Blue | Breathe | Forever | WiFi connecting (from wifi_manager) |
+| 🔵 Blue | Breathe | Forever | Loading: HTTP download / SD read / decode (from album_app) |
+| 🟢 Green | Solid | Forever | WiFi connected (from wifi_manager) |
+| 🟢 Green | Flash | ~2s | Operation succeeded (from album_app) |
+| 🔴 Red | Flash | 3× | WiFi failed (from wifi_manager) |
+| 🔴 Red | Flash | ~2s | Request/decode failed (from album_app) |
+| 🟠 Orange | Flash | 10× | WiFi connection lost (from wifi_manager) |
+| 🟡 Yellow | Flash | Forever | AP provisioning idle (from wifi_manager) |
+| 🔵 Cyan | Solid | Forever | AP being configured (from wifi_manager) |
+| LED off | - | - | Idle / deep sleep |
 
 ### Button Mapping
 | Gesture | Action |
