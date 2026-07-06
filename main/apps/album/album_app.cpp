@@ -790,9 +790,10 @@ void AlbumApp::run_pending_download(void)
         int today = get_today();
         if (today > 0) write_index_date(today);
         _dl_pending = false;
-        ESP_LOGI(TAG, "Download complete (10 images), going to sleep");
+        ESP_LOGI(TAG, "Download complete (10 images), sleep in 5s");
         _dl_in_progress = false;
-        go_to_sleep();   // don't wait for idle timeout
+        vTaskDelay(pdMS_TO_TICKS(5000));   // let LED finish
+        go_to_sleep();
         return;
     }
 
