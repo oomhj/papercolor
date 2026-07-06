@@ -20,7 +20,7 @@ PaperColor 的编译在 **Docker 容器** 内完成，烧录使用 **主机 espt
 
 ```bash
 docker run -d --rm --name papercolor-build \
-  -v /Users/mahaojie/Project/PaperColor:/workspaces/PaperColor \
+  -v $(pwd):/workspaces/PaperColor \
   -w /workspaces/PaperColor \
   espressif/idf:release-v5.5 \
   sleep infinity
@@ -51,7 +51,7 @@ ls /dev/tty.* | grep -E 'usb|acm'
 ### 2.4 烧录（主机 esptool）
 
 ```bash
-cd /Users/mahaojie/Project/PaperColor/build
+cd build
 
 esptool.py --chip esp32s3 \
   -p /dev/tty.usbmodem1101 \

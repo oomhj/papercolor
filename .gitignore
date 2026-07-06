@@ -21,5 +21,12 @@ managed_components/
 .DS_Store
 Thumbs.db
 
+# Claude Code local settings
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+
 # M5Stack demo (reference only, not part of active project)
 m5_demo/
