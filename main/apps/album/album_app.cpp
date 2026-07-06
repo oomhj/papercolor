@@ -679,12 +679,12 @@ bool AlbumApp::init()
     // Detect RTC wake → restore index and update date
     bool rtc_wake = pc_hal_is_rtc_wake();
     if (rtc_wake) {
-        uint8_t idx = 0;
-        if (pc_hal_rtc_ram_read(0, &idx) && idx >= 1 && idx <= ALBUM_MAX_IMAGES)
-            _current_idx = idx;
-        uint8_t lo = 0, hi = 0;
+        uint8_t idx = 0, lo = 0, hi = 0;
+        bool ram_ok = pc_hal_rtc_ram_read(0, &idx);
         pc_hal_rtc_ram_read(1, &lo);
         pc_hal_rtc_ram_read(2, &hi);
+        if (ram_ok && idx >= 1 && idx <= ALBUM_MAX_IMAGES)
+            _current_idx = idx;
         _last_update_date = (hi << 8) | lo;
         ESP_LOGI(TAG, "RTC wake, restored idx=%d date=%d", _current_idx, _last_update_date);
     }
