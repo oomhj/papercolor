@@ -1,8 +1,6 @@
-# 网络相册功能
+# 相册功能
 
-在 PaperColor 墨水屏上滚动显示网络随机图片。
-
-> 📌 当前实现：**P0**（固定 URL + 单图下载显示）
+PaperColor 上的每日照片幻灯片。自动下载 Bing 壁纸，SD 卡缓存 10 张，30 分钟自动轮播。
 
 ---
 
@@ -11,77 +9,52 @@
 | 项目 | 内容 |
 |------|------|
 | 应用目录 | `main/apps/album/` |
-| 数据源 | picsum.photos 随机风景图片（600×400 JPEG） |
-| 交互方式 | 3 个物理按键 |
-| 依赖硬件 | EPD 显示屏、WiFi、RGB LED |
-| 当前阶段 | P0 — 单图显示 + 按键翻页 |
-
----
+| 数据源 | `https://bing.img.run/rand_1366x768.php` → 302 重定向 → Bing CDN |
+| 交互方式 | 3 个物理按键 + 自动定时 |
+| 存储 | SD 卡（可选）/ 无 SD 单图模式 |
+| 低功耗 | ESP32 Deep Sleep（~100µA，30 分钟定时唤醒） |
 
 ## 二、文件结构
 
 ```
 main/apps/album/
-├── album_app.h         # 应用生命周期定义
-└── album_app.cpp       # 主逻辑（WiFi + HTTP + 渲染 + 按键）
+├── album_app.h         # 应用生命周期 + 状态
+├── album_app.cpp       # 主逻辑
+└── filter.h/cpp        # Floyd-Steinberg 抖动
 
-依赖:
-- hal/hal (硬件抽象层)
-- M5GFX (drawJpg, Canvas 离屏渲染)
-- ESP-IDF: esp_http_client, esp_wifi, nvs_flash, esp-tls, mbedtls
+main/hal/
+├── battery.h/cpp       # 电池监控
+├── sd_card.h/cpp       # SD 卡挂载
+└── spi_bus.h/cpp       # SPI 仲裁（EPD + SD）
 ```
 
----
+## 三、按键映射
 
-## 三、按键交互
-
-| 按键 | 功能 | 实现方式 |
-|------|------|---------|
-| BTN-A (G10) / BTN-C (G1) | 换一张新随机图片 | `_needs_refresh = true` |
-| BTN-B (G9) | 刷新（重新下载当前图片） | `_needs_refresh = true` |
-| BTN-C (G1) 长按 5 秒 | 进入深度休眠 | `pc_hal_deep_sleep()` |
-
-所有按键均为 `wasClicked()` 触发换图；BTN-C 的 `wasHold()` 触发休眠。
-
----
+| 操作 | 功能 |
+|------|------|
+| **UP** (G9) | 上一张 |
+| **DOWN** (G10) | 下一张 |
+| **TOP 长按** (G1) | 重新下载 10 张 |
+| **UP + DOWN 同按** | WiFi 配网 |
 
 ## 四、数据流
 
 ```
-按键 → LED 蓝灯 → WiFi 连接（硬编码） → HTTP GET → 动态缓冲区
-  → LED 绿(成功)/红(失败) → drawJpg() → Canvas → EPD display()
-  → LED 熄灭 → 等待
+HTTP 下载:
+  TOP 长按 → 删除旧图 → 下载 1.jpg → 显示
+  → 后台续传 2..10.jpg → 每张存进度 → 完成 → 5s → deep sleep
+
+SD 加载（翻页）:
+  UP/DOWN → 读 SD 缓存 → esp_new_jpeg 解码
+  → Floyd-Steinberg 抖动 → pushImage → EPD refresh
+
+低功耗:
+  RTC 定时唤醒 → 翻到下一张 → deep sleep
+  按键唤醒 → 正常模式 → 60s 空闲 → deep sleep
 ```
 
----
+## 五、配置
 
-## 五、关键设计决策
+WiFi 配置：`/sd/wifi.txt`（SSID + 密码 + DNS，可选）
 
-| 决策 | 当前实现 | 未来规划 |
-|------|---------|---------|
-| 数据源 | picsum.photos 固定 URL | JSON 清单远程更新 |
-| 布局 | 全屏 600×400 drawJpg | 缩放居中 + 底栏 |
-| 动画 | 无（直接刷新整屏） | 步进滑动效果 |
-| 缓存 | 无 | SD 卡离线缓存 |
-| WiFi | 独立硬编码连接 | 迁移到 wifi_manager |
-
----
-
-## 六、实施路线
-
-| 阶段 | 内容 | 模块 | 状态 |
-|------|------|------|------|
-| P0 | Single URL 单图 + 按键翻页 | `album_app.cpp` | ✅ 已完成 |
-| P1 | 图片缩放 + 状态栏 | `album_renderer.*` | 📅 |
-| P2 | JSON 清单多图源 | album_app | 📅 |
-| P3 | SD 卡缓存 | hal_storage | 📅 |
-
----
-
-## 七、开发指引
-
-- 修改数据源：编辑 `album_app.cpp` 中的 `IMAGE_URL` 和 `IMAGE_HOST`
-- 修改 WiFi 配置：编辑文件顶部的 `ALBUM_SSID` / `ALBUM_PASS` 宏定义
-- 入口文件：`main/main.cpp` 当前运行此应用
-
-详细实现说明见 [`docs/album-design.md`](../../album-design.md)。
+相册配置：`/sd/album/config.txt`（ssid, pass, dns, updated）

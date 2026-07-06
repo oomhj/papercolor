@@ -7,5 +7,4 @@
 | 联网及配网 | `network/` | 已实现（wifi_manager + wifi_provisioning） |
 | 连接生命周期 | `network/connection-lifecycle.md` | 已实现 |
 | 配网流程 | `network/provisioning.md` | 已实现 |
-| 网络相册 | `album/` | P0 已实现（album_app） |
-| 热点新闻阅读器 | `../news-display-design.md` | P0 已实现（news_app） |
+| 网络相册 | `album/` | 已实现（album_app） |
