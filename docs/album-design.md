@@ -1,126 +1,114 @@
-# 网络相册 — 设计方案与实现
+# Album 相册 — 设计与实现
 
-在 PaperColor 墨水屏上滚动显示网络随机图片。
-
-> 📌 当前实现：**P0**（固定 URL + 单图显示）
+PaperColor 上的每日照片幻灯片。自动下载 Bing 壁纸，在 E-Ink 屏上 30 分钟轮播。
 
 ---
 
-## 一、数据源
-
-### 当前（P0）：Fixed URL（picsum.photos）
-
-```c
-static const char* IMAGE_URL = "https://picsum.photos/600/400";
-```
-
-- 每次 HTTP GET 返回一张随机风景图片
-- 600×400 JPEG，约 50–200KB
-- 无需 API Key，无请求次数限制
-
-### 规划
-
-| 阶段 | 方案 | 状态 |
-|------|------|------|
-| P0 | picsum.photos 固定 URL | ✅ 已实现 |
-| P1 | JSON 清单（可远程更新图片列表） | 📅 待实现 |
-| P2 | 图片缓存到 SD 卡离线浏览 | 📅 待实现 |
-
----
-
-## 二、EPD 显示布局
-
-横屏 600×400：
+## 一、架构概览
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                                                                  │
-│                                                                  │
-│                                                                  │
-│                          ┌──────────────────┐                    │
-│                          │                  │                    │
-│                          │    JPEG 图片      │                    │
-│                          │   drawJpg() 全屏  │                    │
-│                          │   自适应缩放到     │                    │
-│                          │   600×400         │                    │
-│                          │                  │                    │
-│                          └──────────────────┘                    │
-│                                                                  │
-│                                                                  │
-│                                                                  │
-├──────────────────────────────────────────────────────────────────┤
-│  Scenery Album                      [A][B] New   [C] Sleep      │
-└──────────────────────────────────────────────────────────────────┘
+Bing API ─→ HTTP ─→ JPEG ↓
+                         esp_new_jpeg decode ─→ RGB565 ─→ Floyd-Steinberg ─→ EPD
+SD card ─→ JPG 缓存 ──────↑
 ```
 
-### 设计 vs 实现对比
+## 二、双模式
 
-| 元素 | 设计方案 | 当前实现 |
-|------|---------|---------|
-| 顶栏 | 标题 + 页码 + 日期 | 无（全屏图片更沉浸） |
-| 图片区域 | 居中缩放，空白填充 | 全屏 600×400 drawJpg |
-| 底栏 | [A] Prev / [B] Refresh / [C] Next | "Scenery Album" + 按键提示 |
-| 滑动动画 | 步进 30px 分 10 步 | P1 待实现，P0 无动画 |
+| 模式 | 触发条件 | 行为 |
+|------|---------|------|
+| **SD 模式** | SD 卡已插入 | 10 张幻灯片，每日更新，断点续传 |
+| **无 SD 模式** | 无 SD 卡 | 下载 1 张显示，30 分钟自动刷新 |
 
----
+## 三、数据流
 
-## 三、按键交互
+```
+启动：
+  挂载 SD → 扫描 /sd/album/ 已有图片 → 直接显示第一张（<1s）
+  → 检查 config.txt updated= 日期
+    → 新的一天 → 后台下载 10 张
+    → 同一天且图片不足 → 后台续传
+    → 已完成 → 等待 30 分钟定时翻页
 
-| 按键 | 功能 | 实现 |
-|------|------|------|
-| BTN-A (G10) | 换一张新图片 | `_needs_refresh = true` |
-| BTN-B (G9) | 刷新（重新加载当前图片） | `_needs_refresh = true` |
-| BTN-C (G1) 长按 5 秒 | 休眠 | `pc_hal_deep_sleep()` |
+翻页（自动/手动）：
+  RTC 定时唤醒（30min）→ 读取 RTC RAM 索引 → 翻到下一张 → deep sleep
+  按键 UP/DOWN → 翻到上一张/下一张 → 60s 空闲 → deep sleep
 
-BTN-A 和 BTN-C 的 `wasClicked()` 效果相同（都触发刷新新的随机图）。
-BTN-C 的 `wasHold()` 进入深度休眠。
+刷新（TOP 长按）：
+  删除旧图 → 下载第 1 张 → 显示 → 后台续传 2..10
+  → 下载失败时从 SD 恢复已有图片
+```
 
----
+## 四、按键映射
 
-## 四、技术实现
-
-| 问题 | 方案 |
+| 操作 | 功能 |
 |------|------|
-| **图片解码** | `M5GFX.drawJpg()` 直接从内存缓冲区渲染 |
-| **大图内存** | 动态分配缓冲区（自动扩展），上限约 2MB |
-| **下载超时** | 30s，失败显示 "Load Failed" |
-| **WiFi** | 独立 `wifi_connect()`（硬编码 SSID/PASS，未使用 wifi_manager） |
-| **HTTPS 证书** | `esp_crt_bundle_attach` 验证 |
-| **EPD 刷新** | 每次翻页间隔取决于网络，无强制限制 |
+| **UP** (G9) | 上一张（fast EPD 模式） |
+| **DOWN** (G10) | 下一张 |
+| **TOP 长按** (G1) | 重新下载 10 张 |
+| **UP + DOWN 同按** | WiFi 配网（SD → AP） |
 
-### 数据流
+## 五、技术实现
 
-```
-按键触发 → LED 蓝灯 → WiFi 连接 → HTTP GET 图片
-  → LED 绿灯（成功）/ 红灯（失败）
-  → drawJpg() → Canvas pushSprite → EPD display()
-  → LED 熄灭 → 等待下个按键
-```
+| 模块 | 方案 |
+|------|------|
+| **JPEG 解码** | `esp_new_jpeg` → RGB565_BE，比例缩放至 400px 高度 |
+| **抖动** | Floyd-Steinberg 误差扩散，适配 EPD 8-bit 色域 |
+| **EPD 刷新** | `epd_quality`（~1.5s），`epd_fastest` 已实现但未启用 |
+| **HTTP** | `esp_http_client`，20s 超时，5 次重定向 |
+| **WiFi** | `wifi_manager`（NVS + SD wifi.txt + AP 配网） |
+| **SD 卡** | `sd_card` 模块（FatFS，SPI 仲裁） |
+| **低功耗** | ESP32 Deep Sleep，30min RTC 定时器 + 按键 ext1 唤醒 |
+| **RTC** | RX8130CE，RAM 持久化幻灯片索引 |
+| **配置** | `/sd/album/config.txt`（key=value） |
 
----
-
-## 五、文件结构
+## 六、文件结构
 
 ```
 main/apps/album/
-├── album_app.h         # 应用生命周期定义
-└── album_app.cpp       # 主逻辑（WiFi + HTTP + EPD 渲染 + 按键处理）
-
-依赖:
-- hal/hal（硬件抽象）
-- M5GFX（drawJpg, Canvas）
-- ESP-IDF: esp_http_client, esp_wifi, nvs_flash
+├── album_app.h         # 应用生命周期 + 状态
+├── album_app.cpp       # 主逻辑
+├── filter.h            # 抖动滤镜声明
+└── filter.cpp          # Floyd-Steinberg 实现
 ```
 
-> 说明：设计方案中规划的 `album_renderer.h/cpp` 尚未创建（P1 动画功能时引入）。
+依赖：
+- `hal/hal` — 硬件抽象
+- `hal/battery` — 电池监视
+- `hal/sd_card` — SD 卡
+- `hal/spi_bus` — SPI 仲裁
+- `wifi/wifi_manager` — WiFi 管理
 
----
+## 七、SD 卡文件结构
 
-## 六、实施路线
+```
+/sd/album/
+  ├── 1.jpg ~ 10.jpg    ← 缓存图片
+  └── config.txt         ← 配置（ssid, pass, dns, updated）
 
-| 阶段 | 内容 | 状态 |
-|------|------|------|
-| **P0** | 固定 URL + 单图显示 + 按键翻页 | ✅ 已完成 |
-| **P1** | drawJpg 缩放 + 底部状态栏 | 📅 |
-| **P2** | JSON 清单远程更新 | 📅 |
-| **P3** | SD 卡缓存离线浏览 | 📅 |
+/sd/wifi.txt             ← WiFi 预配置（兼容旧版）
+```
+
+## 八、低功耗模式
+
+```
+运行 → 60s 空闲 → deep sleep
+  ├─ 30min RTC 唤醒 → 翻页 → sleep
+  ├─ 按键唤醒 → 正常模式 → 60s 空闲 → sleep
+  └─ 电量 < 10% → 永久关机（需充电）
+```
+
+## 九、实施状态
+
+| 功能 | 状态 |
+|------|------|
+| 单图显示 | ✅ |
+| 10 张幻灯片 | ✅ |
+| SD 卡缓存 | ✅ |
+| 无 SD 模式 | ✅ |
+| Deep sleep | ✅ |
+| 电量指示 | ✅ |
+| WiFi 配网 | ✅ |
+| 断点续传 | ✅ |
+| Kconfig 可配 URL | 📅 |
+| OTA 升级 | 📅 |
+| 电量显示到 EPD | ✅ 五格电池图标 |
