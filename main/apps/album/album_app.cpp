@@ -527,7 +527,7 @@ bool AlbumApp::load_and_show(int index, bool fast)
     bat_update();
 
     bool ok = decode_and_render(_img_buf, _img_len, fast);
-    if (ok) led_success(); else led_failure();
+    if (ok) { led_success(); vTaskDelay(pdMS_TO_TICKS(3000)); } else led_failure();
     return ok;
 }
 
