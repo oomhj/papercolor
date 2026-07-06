@@ -151,28 +151,82 @@ void sd_card_unlock(void);       // release SPI after SD
 - LED breathing: slow blue (connecting), green 3s (success), fast blue (provisioning)
 - Button: BTN-B (G9) long press 3s → provisioning; BTN-C (G1) long press 5s → sleep
 
-Note: Album app uses `wifi_manager` (NVS + SD wifi.txt + AP provisioning). News app still uses independent hardcoded WiFi.
+Note: Album app uses `wifi_manager` (NVS + SD wifi.txt + AP provisioning).
 
 ## Current Apps
 
 ### Album (Daily Photo Slideshow)
 - `main/main.cpp` runs this app
 - **Dual mode**: with SD card (10-image slideshow) / without SD (single image)
-- **SD mode**: stores `/sd/album/1..10.jpg` + `index.txt` (date of last update)
-  - Shows cached image immediately on boot, then checks for daily update
-  - Daily update: download 1 new image → show → queue rest 9 in background
-  - TOP long press: re-download all 10 (same incremental pattern)
-  - Auto-advance every 30min, UP/DOWN for manual navigation
-  - UP+DOWN held together → WiFi provisioning captive portal
+- **SD mode**: stores `/sd/album/1..10.jpg` + `/sd/album/config.txt`
+  - Shows cached image **immediately** on boot, then checks for daily update
+  - If no images: download 1.jpg → show → queue rest 9 in background
+  - Each download persists progress to config.txt (resumable on power loss)
+  - TOP long press: re-download all 10
+  - Auto-advance every **30min via RTC timer** (ESP32 deep sleep)
+  - **Slideshow cycle**: 1→2→3→...→10→1→2...
+  - UP/DOWN: manual navigation (resets 30min timer)
 - **No-SD mode**: fetch 1 image via HTTP, display, auto-refresh every 30min
-- WiFi: uses `wifi_manager` (NVS-backed). Config from `/sd/wifi.txt` (line1=SSID, line2=pass, line3=DNS optional, default 114.114.114.114). UP+DOWN→provisioning.
+- WiFi: NVS → `/sd/wifi.txt` → AP provisioning (UP+DOWN held)
+- `config.txt` format:
+  ```
+  ssid=MyNetwork
+  pass=MyPassword
+  dns=114.114.114.114
+  updated=20260706
+  ```
 - Fetch: `https://bing.img.run/rand_1366x768.php` → 302 redirect → JPEG
-- Rendering: `esp_new_jpeg` decode → Floyd-Steinberg dither → EPD
+- Rendering: `esp_new_jpeg` decode → Floyd-Steinberg dither → battery icon → EPD
 
-### News (RSS Reader)
-- Uses 少数派(sspai) RSS feed: `https://sspai.com/feed`
-- `news_fetcher` → `news_parser` (tag-based RSS 2.0 parser) → render
-- Display: title (Font6) + source + description, no image support in P0
+### Low-Power Sleep Flow
+```
+Boot → show cached image → 60s idle → deep sleep
+  ├─ RTC timer 30min → wake → advance to next image → deep sleep 30min
+  ├─ Button press → wake → normal mode → 60s idle → deep sleep
+  └─ Battery < 10% → permanent sleep (no wake)
+
+RTC wake (daily update):
+  → refresh_all_images() → dl 1.jpg → show → _dl_pending = true
+  → skip sleep, main loop runs
+  → run_pending_download() → dl 2..10.jpg → each persists progress
+  → all 10 done → 5s delay (LED) → deep sleep 30min
+```
+
+### Battery Indicator
+- 5-segment icon drawn at top-right of EPD on every image display
+- Segments: 20% per bar, charging "+" marker
+- Battery module (`hal/battery.h`): cached 30s I2C reads, shared s_pmu
+
+### LED Indicators
+| Color | Mode | Duration | Meaning |
+|-------|------|----------|---------|
+| 🔵 Blue | Breathe | Forever | Loading (WiFi/HTTP/decode) |
+| 🟡 Yellow | Breathe | Forever | AP provisioning mode |
+| 🟠 Orange | Flash | ~2s | No network |
+| 🔴 Red | Flash | ~2s | Request/decode failed |
+| 🟢 Green | Flash | ~2s | Success |
+
+### Button Mapping
+| Gesture | Action |
+|---------|--------|
+| **UP** (G9) | Previous image |
+| **DOWN** (G10) | Next image |
+| **TOP hold** (G1) | Re-download all 10 images |
+| **UP + DOWN held** | WiFi provisioning (try SD → AP) |
+
+### RX8130 RTC RAM Usage (4 bytes, battery-backed)
+| Index | Register | Purpose |
+|-------|----------|---------|
+| 0 | 0x20 | `_current_idx` — current slide number (1-10) |
+| 1 | 0x21 | `_last_update_date` low byte |
+| 2 | 0x22 | `_last_update_date` high byte |
+
+### Resumable Download
+- `config.txt`'s `updated=` field is written after EACH successful image download
+- On boot: if `updated` == today but files < 10, auto-resume via `_dl_pending`
+- No need to re-download already saved images
+
+(News app removed — was old code with hardcoded WiFi)
 
 ## Development Tips
 
