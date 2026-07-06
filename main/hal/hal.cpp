@@ -224,12 +224,8 @@ void pc_hal_deep_sleep(void)
 
 bool pc_hal_is_rtc_wake(void)
 {
-    if (!s_pmu) return false;
-    uint8_t src = 0;
-    if (s_pmu->getWakeSource(&src, M5PM1_CLEAN_NONE) == M5PM1_OK) {
-        return (src & M5PM1_WAKE_SRC_EXT_WAKE) != 0;
-    }
-    return false;
+    // ESP32 deep sleep: check if wake was from internal RTC timer
+    return esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER;
 }
 
 bool pc_hal_schedule_wake(uint32_t minutes)

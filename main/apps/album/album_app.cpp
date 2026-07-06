@@ -551,7 +551,7 @@ void AlbumApp::show_next(void)
     if (_total_images == 0 || _dl_in_progress) return;
     _current_idx = (_current_idx % _total_images) + 1;
     _last_slide_ms = esp_timer_get_time() / 1000;
-    load_and_show(_current_idx, true);   // fast: button press
+    load_and_show(_current_idx);   // quality (fast impl available but disabled)
 }
 
 void AlbumApp::show_prev(void)
@@ -559,7 +559,7 @@ void AlbumApp::show_prev(void)
     if (_total_images == 0 || _dl_in_progress) return;
     _current_idx = (_current_idx > 1) ? _current_idx - 1 : _total_images;
     _last_slide_ms = esp_timer_get_time() / 1000;
-    load_and_show(_current_idx, true);   // fast: button press
+    load_and_show(_current_idx);   // quality (fast impl available but disabled)
 }
 
 void AlbumApp::check_auto_advance(void)
@@ -637,7 +637,8 @@ void AlbumApp::go_to_sleep(void)
         return;
     }
 
-    ESP_LOGI(TAG, "Deep sleep (%u%%), wake in 30 min or button", bat_get_pct());
+    ESP_LOGI(TAG, "Deep sleep (%u%%), idx=%d, wake in 30 min or button",
+             bat_get_pct(), _current_idx);
 
     // Save state to RTC RAM
     pc_hal_rtc_ram_write(0, (uint8_t)_current_idx);
@@ -678,14 +679,14 @@ bool AlbumApp::init()
     // Detect RTC wake → restore index and update date
     bool rtc_wake = pc_hal_is_rtc_wake();
     if (rtc_wake) {
-        uint8_t idx = 0;
-        if (pc_hal_rtc_ram_read(0, &idx) && idx >= 1 && idx <= ALBUM_MAX_IMAGES)
-            _current_idx = idx;
-        uint8_t lo = 0, hi = 0;
+        uint8_t idx = 0, lo = 0, hi = 0;
+        bool ram_ok = pc_hal_rtc_ram_read(0, &idx);
         pc_hal_rtc_ram_read(1, &lo);
         pc_hal_rtc_ram_read(2, &hi);
+        if (ram_ok && idx >= 1 && idx <= ALBUM_MAX_IMAGES)
+            _current_idx = idx;
         _last_update_date = (hi << 8) | lo;
-        ESP_LOGI(TAG, "RTC wake, restored idx=%d date=%d", _current_idx, _last_update_date);
+        ESP_LOGI(TAG, "RTC wake: idx=%d date=%d", _current_idx, _last_update_date);
     }
 
     _sd_mounted = sd_card_mount();
@@ -726,6 +727,9 @@ bool AlbumApp::init()
     } else {
         // RTC wake: advance to next image
         _total_images = scan_folder_images();
+        ESP_LOGI(TAG, "RTC wake: idx=%d total=%d → next=%d",
+                 _current_idx, _total_images,
+                 _total_images > 0 ? (_current_idx % _total_images) + 1 : 0);
         if (_total_images > 0) {
             _current_idx = (_current_idx % _total_images) + 1;
             load_and_show(_current_idx);
