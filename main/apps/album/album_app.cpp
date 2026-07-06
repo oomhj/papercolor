@@ -476,6 +476,7 @@ void AlbumApp::refresh_all_images(void)
         _current_idx = 1;
         load_and_show(_current_idx);
         _last_slide_ms = esp_timer_get_time() / 1000;
+        write_index_date(get_today());  // persist progress
         _dl_pending = true;   // 2..10 in background
     }
 }
@@ -685,8 +686,8 @@ bool AlbumApp::init()
         pc_hal_rtc_ram_read(2, &hi);
         if (ram_ok && idx >= 1 && idx <= ALBUM_MAX_IMAGES)
             _current_idx = idx;
-        _last_update_date = (hi << 8) | lo;
-        ESP_LOGI(TAG, "RTC wake, restored idx=%d date=%d", _current_idx, _last_update_date);
+        _last_update_date = (hi << 8) | lo;  // tentative, may be overwritten
+        ESP_LOGI(TAG, "RTC wake, ram idx=%d date=%d", _current_idx, _last_update_date);
     }
 
     _sd_mounted = sd_card_mount();
@@ -704,9 +705,18 @@ bool AlbumApp::init()
     // ── SD mode ──
     ensure_album_folder();
 
+    // Resolve update date: config.txt is primary, RTC RAM is fallback
+    {
+        int cfg_date = read_index_date();
+        if (cfg_date > 20240000) _last_update_date = cfg_date;
+        ESP_LOGI(TAG, "Update date: config=%d ram=%d → %d",
+                 cfg_date,
+                 rtc_wake ? ((int)_last_update_date) : 0,
+                 _last_update_date);
+    }
+
     if (!rtc_wake) {
         // Button wake: EPD already shows the last image, don't refresh
-        _last_update_date = read_index_date();
         _total_images = scan_folder_images();
 
         if (_total_images > 0) {
@@ -721,6 +731,9 @@ bool AlbumApp::init()
             int today = get_today();
             if (today > _last_update_date) {
                 ESP_LOGI(TAG, "New day (%d > %d), queuing download", today, _last_update_date);
+                _dl_pending = true;
+            } else if (today > 0 && today == _last_update_date && _total_images < ALBUM_MAX_IMAGES) {
+                ESP_LOGI(TAG, "Resume interrupted download (%d/%d)", _total_images, ALBUM_MAX_IMAGES);
                 _dl_pending = true;
             }
         }
@@ -741,9 +754,12 @@ bool AlbumApp::init()
         if (today > 0 && today > _last_update_date) {
             ESP_LOGI(TAG, "RTC wake new day (%d > %d), refreshing", today, _last_update_date);
             refresh_all_images();
+        } else if (today > 0 && today == _last_update_date && _total_images < ALBUM_MAX_IMAGES) {
+            ESP_LOGI(TAG, "RTC wake resume interrupted (%d/%d)", _total_images, ALBUM_MAX_IMAGES);
+            _dl_pending = true;
         }
 
-        // Sleep unless there's a pending download (new day refresh)
+        // Sleep unless there's a pending download
         if (!_dl_pending) go_to_sleep();
     }
 
@@ -776,8 +792,10 @@ void AlbumApp::run_pending_download(void)
         if (wifi_ensure_connected()) {
             int start = _total_images + 1;
             for (int i = start; i <= ALBUM_MAX_IMAGES; i++) {
-                if (download_one(i)) _total_images = i;
-                else break;
+                if (download_one(i)) {
+                    _total_images = i;
+                    write_index_date(get_today());  // persist progress
+                } else break;
             }
         } else {
             ESP_LOGW(TAG, "WiFi failed — deferring download");
