@@ -8,6 +8,7 @@
 #include "wifi_manager.h"
 #include "wifi_provisioning.h"
 #include "hal/button.h"
+#include "hal/led_driver.h"
 #include <cstdio>
 #include <cstring>
 #include <esp_log.h>
@@ -47,7 +48,22 @@ static void set_state(wifi_state_t new_state)
 
 void wifi_mgr_update_led(void)
 {
-    // LED managed by app layer — no-op
+    switch (s_state) {
+        case WIFI_STATE_STA_CN:
+            led_async_breath_forever(0, 0, 255);        break;  // blue breathing
+        case WIFI_STATE_STA_OK:
+            led_async_color(0, 255, 0);                 break;  // green
+        case WIFI_STATE_STA_FAIL:
+            led_async_flash(255, 0, 0, 3);              break;  // red flash 3×
+        case WIFI_STATE_STA_LOST:
+            led_async_flash(255, 100, 0, 10);           break;  // orange flash
+        case WIFI_STATE_AP_IDLE:
+            led_async_flash_forever(255, 255, 0);       break;  // yellow flash
+        case WIFI_STATE_AP_CFG:
+            led_async_color(0, 100, 255);               break;  // cyan
+        default:
+            led_async_stop();                           break;
+    }
 }
 
 // ── Event handler ────────────────────────────────────────────
