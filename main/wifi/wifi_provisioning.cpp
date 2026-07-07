@@ -24,14 +24,12 @@ static const char* TAG = "WiFiProv";
 
 // ── Constants ────────────────────────────────────────────────
 
-#define DNS_PORT      53
 #define HTTP_PORT     80
 #define AP_TIMEOUT_MS (10 * 60 * 1000)  // 10 min idle timeout
 
 // ── State ────────────────────────────────────────────────────
 
 static httpd_handle_t       s_httpd       = NULL;
-static TaskHandle_t         s_dns_task    = NULL;
 static volatile bool        s_running     = false;
 static uint32_t             s_last_activity = 0;
 
@@ -227,89 +225,26 @@ document.getElementById('apName').textContent = location.hostname;
 </html>
 )HTMLDELIM";
 
+
+
 // ═══════════════════════════════════════════════════════════════
-//  DNS Hijack Server
+//  Deferred Connect Task
 // ═══════════════════════════════════════════════════════════════
 
-static void dns_task_func(void*)
+static void deferred_connect_task(void*)
 {
-    struct sockaddr_in addr = {};
-    addr.sin_family      = AF_INET;
-    addr.sin_port        = htons(DNS_PORT);
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-
-    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock < 0) {
-        ESP_LOGE(TAG, "DNS socket failed");
-        vTaskDelete(NULL);
-        return;
-    }
-    if (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        ESP_LOGE(TAG, "DNS bind failed");
-        close(sock);
-        vTaskDelete(NULL);
-        return;
-    }
-
-    uint8_t buf[512];
-    uint32_t last_tick_check = 0;
-    while (s_running) {
-        // Non-blocking check with 1s timeout for periodic tick
-        struct sockaddr_in from = {};
-        socklen_t fromlen = sizeof(from);
-        fd_set readfds;
-        FD_ZERO(&readfds);
-        FD_SET(sock, &readfds);
-        struct timeval tv = {1, 0};  // 1s select timeout
-        int sel = select(sock + 1, &readfds, NULL, NULL, &tv);
-        if (sel == 0) {
-            // Timeout — periodic AP idle check (every 5s)
-            uint32_t now = esp_timer_get_time() / 1000;
-            if (now - last_tick_check > 5000) {
-                last_tick_check = now;
-                if (now - s_last_activity > AP_TIMEOUT_MS) {
-                    ESP_LOGI(TAG, "AP idle timeout, shutting down");
-                    s_running = false;
-                    break;
-                }
-            }
-            continue;
-        }
-        int n = recvfrom(sock, buf, sizeof(buf), 0, (struct sockaddr*)&from, &fromlen);
-        if (n < 12) continue;
-
-        // Respond to ANY query with 192.168.4.1
-        uint16_t id = (buf[0] << 8) | buf[1];
-        buf[0] = id >> 8; buf[1] = id & 0xFF;
-
-        // Flags: response + authoritative + recursion desired
-        buf[2] = 0x85; buf[3] = 0x80;
-        // QDCOUNT = 1, ANCOUNT = 1
-        buf[6] = 0; buf[7] = 1;  // ANCOUNT
-        // Answer at offset n
-        int len = n;
-        buf[len++] = 0xC0; buf[len++] = 0x0C;  // pointer to query name
-        buf[len++] = 0x00; buf[len++] = 0x01;  // A record
-        buf[len++] = 0x00; buf[len++] = 0x01;  // class IN
-        buf[len++] = 0x00; buf[len++] = 0x00;  // TTL
-        buf[len++] = 0x00; buf[len++] = 0x3C;  // 60s
-        buf[len++] = 0x00; buf[len++] = 0x04;  // data length
-        buf[len++] = 192; buf[len++] = 168;     // 192.168.4.1
-        buf[len++] = 4;   buf[len++] = 1;
-
-        sendto(sock, buf, len, 0, (struct sockaddr*)&from, fromlen);
-    }
-
-    close(sock);
-    // AP timeout expired — stop AP and provisioning
+    vTaskDelay(pdMS_TO_TICKS(500));
     wifi_prov_stop();
     wifi_mgr_stop_ap();
+    wifi_mgr_connect_sta(30000);
+    wifi_mgr_stop_retry();
+    vTaskDelay(pdMS_TO_TICKS(5000));
     vTaskDelete(NULL);
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  HTTP Handlers
-// ═══════════════════════════════════════════════════════════════
+// ═════════════════════════════════════════════════════════════════════════════════════════════════════
 
 static esp_err_t handle_get_root(httpd_req_t* req)
 {
@@ -379,13 +314,7 @@ static esp_err_t handle_post_config(httpd_req_t* req)
     ESP_LOGI(TAG, "Provisioning done, stopping AP");
     wifi_mgr_stop_ap();
 
-    xTaskCreate([](void*) {
-        vTaskDelay(pdMS_TO_TICKS(500));  // let handler finish
-        wifi_prov_stop();                // safe here (handler already returned)
-        wifi_mgr_connect_sta(30000);
-        vTaskDelay(pdMS_TO_TICKS(5000)); // keep LED visible before potential sleep
-        vTaskDelete(NULL);
-    }, "prov_conn", 4096, NULL, 5, NULL);
+    xTaskCreate(deferred_connect_task, "prov_conn", 4096, NULL, 5, NULL);
 
     return ESP_OK;
 }
@@ -449,10 +378,7 @@ void wifi_prov_start(void)
     s_running = true;
     s_last_activity = esp_timer_get_time() / 1000;
 
-    // ── DNS task ──
-    xTaskCreate(dns_task_func, "dns", 3072, NULL, 5, &s_dns_task);
-
-    // ── HTTP server ──
+    // ── HTTP server (no DNS - user connects via AP IP) ──
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port    = HTTP_PORT;
     cfg.max_open_sockets = 5;
@@ -478,7 +404,6 @@ void wifi_prov_start(void)
 void wifi_prov_stop(void)
 {
     s_running = false;
-    if (s_dns_task) { vTaskDelete(s_dns_task); s_dns_task = NULL; }
     if (s_httpd)    { httpd_stop(s_httpd); s_httpd = NULL; }
 }
 
