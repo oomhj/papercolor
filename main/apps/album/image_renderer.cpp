@@ -5,6 +5,7 @@
 #include "image_renderer.h"
 #include "hal/hal.h"
 #include "hal/battery.h"
+#include "hal/led_driver.h"
 #include "filter.h"
 #include <cstdio>
 #include <cstdlib>
@@ -131,6 +132,9 @@ void ren_render(uint8_t* decoded, int sw, int sh,
 
     free(crop);
     free(dither);
+
+    // LED flash before EPD refresh — user sees EPD updating visually
+    led_async_flash(0, 255, 0, 4);
 
     // EPD refresh
     pc_hal_epd_refresh(fast);

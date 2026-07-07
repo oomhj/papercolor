@@ -258,7 +258,7 @@ bool SlideShow::load_and_show(int index, bool fast)
     bat_update();
 
     bool ok = decode_and_render(_img_buf, _img_len, fast);
-    if (ok) { led_async_flash(0, 255, 0, 4); vTaskDelay(pdMS_TO_TICKS(3000)); } else led_async_flash(255, 0, 0, 4);
+    if (!ok) led_async_flash(255, 0, 0, 4);
     return ok;
 }
 
