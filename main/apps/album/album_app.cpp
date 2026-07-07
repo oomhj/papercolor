@@ -886,6 +886,7 @@ void AlbumApp::update()
     // ── Auto-sleep after idle timeout ──
     if (_dl_pending || _dl_in_progress) return;           // downloading
     if (spi_bus_get_owner() != SPI_OWNER_NONE) return;    // SPI busy
+    if (wifi_mgr_get_state() == WIFI_STATE_STA_CN) return; // connecting
 
     uint64_t now = esp_timer_get_time() / 1000;
     if (now - s_last_activity_ms >= IDLE_SLEEP_MS) {

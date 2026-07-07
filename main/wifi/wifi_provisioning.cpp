@@ -142,7 +142,7 @@ async function connect() {
     ? JSON.stringify({ssid, auth, identity: username, username, pass})
     : JSON.stringify({ssid, pass});
   document.getElementById('connectBtn').disabled = true;
-  show('Connecting...', 'info');
+  show('Saving...', 'info');
   try {
     const r = await fetch('/api/config', {
       method:'POST',
@@ -151,8 +151,7 @@ async function connect() {
     });
     const j = await r.json();
     if (j.status === 'ok') {
-      show('Success! Device will restart...', 'ok');
-      setTimeout(() => location.reload(), 3000);
+      show('Saved successfully', 'ok');
     } else {
       show(j.message || 'Failed', 'err');
       document.getElementById('connectBtn').disabled = false;
