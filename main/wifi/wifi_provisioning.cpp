@@ -318,26 +318,11 @@ static esp_err_t handle_post_config(httpd_req_t* req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, ok, strlen(ok));
 
-    // Stop provisioning server and AP
-    wifi_prov_stop();
+    // Return from handler FIRST to avoid deadlocking httpd_stop().
+    // Stop AP mode - the app's main loop will reconnect via
+    // wifi_ensure_connected() on the next update cycle.
+    ESP_LOGI(TAG, "Provisioning done, stopping AP");
     wifi_mgr_stop_ap();
-    vTaskDelay(pdMS_TO_TICKS(200));
-
-    // Connect to the newly saved network
-    ESP_LOGI(TAG, "Connecting to %s...", ssid);
-    led_async_color(255, 200, 0);  // yellow: connecting
-
-    if (wifi_mgr_connect_sta(15000)) {
-        ESP_LOGI(TAG, "Connected to %s", ssid);
-        led_async_flash(0, 255, 0, 4);  // green flash ~2s
-        vTaskDelay(pdMS_TO_TICKS(2500));
-        led_async_off();
-    } else {
-        ESP_LOGW(TAG, "Failed to connect to %s", ssid);
-        led_async_flash(255, 0, 0, 4);  // red flash ~2s
-    }
-
-    ESP_LOGI(TAG, "Provisioning done");
     return ESP_OK;
 }
 
