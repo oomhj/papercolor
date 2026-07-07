@@ -233,11 +233,13 @@ document.getElementById('apName').textContent = location.hostname;
 
 static void deferred_connect_task(void*)
 {
+    ESP_LOGI(TAG, "[PROV] exit: stopping HTTP + connecting");
     vTaskDelay(pdMS_TO_TICKS(500));
     wifi_prov_stop();
     wifi_mgr_stop_ap();
-    wifi_mgr_connect_sta(30000);
+    bool ok = wifi_mgr_connect_sta(30000);
     wifi_mgr_stop_retry();
+    ESP_LOGI(TAG, "[PROV] exit: connect %s", ok ? "SUCCESS (IP)" : "FAILED");
     vTaskDelay(pdMS_TO_TICKS(5000));
     vTaskDelete(NULL);
 }

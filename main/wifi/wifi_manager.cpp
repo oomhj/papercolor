@@ -246,7 +246,7 @@ void wifi_mgr_start_ap(void)
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_set_config(WIFI_IF_AP, &ap));
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_start());
     set_state(WIFI_STATE_AP_IDLE);
-    ESP_LOGI(TAG, "AP started: %s", s_ap_ssid);
+    ESP_LOGI(TAG, "[PROV] enter: AP=%s", s_ap_ssid);
 }
 
 void wifi_mgr_stop_ap(void)
