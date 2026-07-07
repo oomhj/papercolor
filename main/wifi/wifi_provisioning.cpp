@@ -311,11 +311,8 @@ static esp_err_t handle_post_config(httpd_req_t* req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, ok, strlen(ok));
 
-    // Return from handler first to avoid deadlocking httpd_stop().
-    // Deferred task stops prov, then connects.
-    ESP_LOGI(TAG, "Provisioning done, stopping AP");
-    wifi_mgr_stop_ap();
-
+    // Deferred task handles stopping AP + connecting
+    ESP_LOGI(TAG, "Provisioning done, deferred connect");
     xTaskCreate(deferred_connect_task, "prov_conn", 4096, NULL, 5, NULL);
 
     return ESP_OK;
