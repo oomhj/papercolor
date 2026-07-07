@@ -119,8 +119,8 @@ bool AlbumApp::init()
     // RTC wake → restore index and date
     bool rtc_wake = pc_hal_is_rtc_wake();
     int rtc_idx = 1, rtc_date = 0;
+    PowerManager::load_rtc_ram(&rtc_idx, &rtc_date);
     if (rtc_wake) {
-        PowerManager::load_rtc_ram(&rtc_idx, &rtc_date);
         ESP_LOGI(TAG, "RTC wake, ram idx=%d date=%d", rtc_idx, rtc_date);
     }
 
@@ -136,8 +136,8 @@ bool AlbumApp::init()
 
     _slideshow.init(today);
 
-    // RTC wake: restore index that init() just reset to 1
-    if (rtc_wake) _slideshow.current_idx = rtc_idx;
+    // Restore last-viewed index from RTC RAM (reset to 1 on cold boot)
+    _slideshow.current_idx = rtc_idx;
 
     if (!_sd_mounted) {
         ESP_LOGI(TAG, "No SD card — single-image mode");
@@ -165,9 +165,6 @@ bool AlbumApp::init()
 
     if (!rtc_wake) {
         // Button wake
-        if (_slideshow.total_images > 0) {
-            _slideshow.current_idx = 1;
-        }
         if (_slideshow.total_images == 0) {
             _slideshow.refresh_all_images();
         } else if (today > _slideshow.last_update_date) {
