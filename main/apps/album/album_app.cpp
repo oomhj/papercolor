@@ -898,27 +898,28 @@ void AlbumApp::update()
 
 void AlbumApp::handle_buttons()
 {
+    // Skip if busy handling combo (prevents wasClicked() after combo release)
+    if (_btn_busy) return;
+
     // Track any button activity for idle sleep timer
     if (BTN_UP.isPressed() || BTN_DOWN.isPressed() || BTN_TOP.isPressed())
         s_last_activity_ms = esp_timer_get_time() / 1000;
 
     // UP + DOWN held together → provisioning
     if (BTN_UP.isPressed() && BTN_DOWN.isPressed()) {
-        if (!_btn_busy) {
-            _btn_busy = true;
-            // Try wifi.txt from SD first
-            if (load_wifi_from_sd() && wifi_mgr_connect_sta(5000)) {
-                set_dns();
-                save_wifi_to_sd();
-                ESP_LOGI(TAG, "Connected via SD wifi.txt");
-            } else {
-                ESP_LOGI(TAG, "UP+DOWN: AP provisioning");
-                led_async_breath_forever(255, 200, 0);  // yellow: provisioning
-                wifi_mgr_trigger_provisioning();
-            }
-            vTaskDelay(pdMS_TO_TICKS(500));
-            _btn_busy = false;
+        _btn_busy = true;
+        // Try wifi.txt from SD first
+        if (load_wifi_from_sd() && wifi_mgr_connect_sta(5000)) {
+            set_dns();
+            save_wifi_to_sd();
+            ESP_LOGI(TAG, "Connected via SD wifi.txt");
+        } else {
+            ESP_LOGI(TAG, "UP+DOWN: AP provisioning");
+            led_async_breath_forever(255, 200, 0);  // yellow: provisioning
+            wifi_mgr_trigger_provisioning();
         }
+        vTaskDelay(pdMS_TO_TICKS(1000));  // debounce: hold busy for 1s
+        _btn_busy = false;
         return;
     }
 
