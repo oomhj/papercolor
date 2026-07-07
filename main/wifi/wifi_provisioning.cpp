@@ -9,6 +9,7 @@
 
 #include "wifi_provisioning.h"
 #include "wifi_manager.h"
+#include "hal/sd_card.h"
 #include <cstdio>
 #include <cstring>
 #include <esp_log.h>
@@ -33,6 +34,61 @@ static httpd_handle_t       s_httpd       = NULL;
 static TaskHandle_t         s_dns_task    = NULL;
 static volatile bool        s_running     = false;
 static uint32_t             s_last_activity = 0;
+
+// ═══════════════════════════════════════════════════════════════
+//  SD Config Persistence
+// ═══════════════════════════════════════════════════════════════
+
+#define CONFIG_PATH "/sd/album/config.txt"
+
+static void cfg_write_val(const char* key, const char* val)
+{
+    char tmp[512] = {};
+    FILE* f = fopen(CONFIG_PATH, "r");
+    if (f) {
+        char line[128];
+        while (fgets(line, sizeof(line), f))
+            strncat(tmp, line, sizeof(tmp) - strlen(tmp) - 1);
+        fclose(f);
+    }
+    char* old = strstr(tmp, key);
+    if (old) {
+        char* nl = strchr(old, '\n');
+        if (nl) memmove(old, nl + 1, strlen(nl + 1) + 1);
+        else *old = '\0';
+    }
+    char newline[128];
+    snprintf(newline, sizeof(newline), "%s=%s\n", key, val);
+    strncat(tmp, newline, sizeof(tmp) - strlen(tmp) - 1);
+    f = fopen(CONFIG_PATH, "w");
+    if (f) { fputs(tmp, f); fclose(f); }
+}
+
+/** Save WiFi config from NVS slot 0 to SD /sd/album/config.txt */
+void wifi_save_config_to_sd(void)
+{
+    char ssid[64] = {}, pass[64] = {};
+    if (!wifi_mgr_load_network(0, ssid, sizeof(ssid), pass, sizeof(pass))) return;
+    if (strlen(ssid) == 0) return;
+
+    sd_card_lock(2000);
+    cfg_write_val("ssid", ssid);
+    cfg_write_val("pass", pass);
+
+    char auth[16] = {};
+    if (wifi_mgr_get_network_auth(0, auth, sizeof(auth)) &&
+        strcmp(auth, WIFI_AUTH_TYPE_ENTERPRISE) == 0) {
+        char identity[64] = {}, un[64] = {};
+        if (wifi_mgr_load_enterprise_params(0, identity, sizeof(identity),
+                                              un, sizeof(un), NULL, 0)) {
+            cfg_write_val("auth", WIFI_AUTH_TYPE_ENTERPRISE);
+            cfg_write_val("identity", identity);
+            cfg_write_val("username", un);
+        }
+    }
+    sd_card_unlock();
+    ESP_LOGI(TAG, "Config saved to SD: %s", ssid);
+}
 
 // ═══════════════════════════════════════════════════════════════
 //  Config Page HTML (embedded)
@@ -308,6 +364,9 @@ static esp_err_t handle_post_config(httpd_req_t* req)
         ESP_LOGI(TAG, "Config received: %s (PSK)", ssid);
         wifi_mgr_save_network(0, ssid, pass);
     }
+
+    // Save to SD card for persistence across reboots
+    wifi_save_config_to_sd();
 
     cJSON_Delete(json);
 

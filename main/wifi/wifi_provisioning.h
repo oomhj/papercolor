@@ -28,6 +28,12 @@ void wifi_prov_stop(void);
  */
 void wifi_prov_tick(void);
 
+/**
+ * @brief Save current WiFi config from NVS slot 0 to SD config.txt.
+ * Used by provisioning (after user submits config) and album app.
+ */
+void wifi_save_config_to_sd(void);
+
 #ifdef __cplusplus
 }
 #endif

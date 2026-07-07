@@ -12,6 +12,7 @@
 #include "hal/sd_card.h"
 #include "hal/led_driver.h"
 #include "wifi_manager.h"
+#include "wifi_provisioning.h"
 #include "filter.h"
 #include <cstdio>
 #include <cstdlib>
@@ -159,30 +160,7 @@ static bool load_wifi_from_sd(void)
 
 static void save_wifi_to_sd(void)
 {
-    char ssid[WIFI_MAX_SSID_LEN + 1] = {}, pass[WIFI_MAX_PASS_LEN + 1] = {};
-    if (!wifi_mgr_load_network(0, ssid, sizeof(ssid), pass, sizeof(pass))) return;
-    if (strlen(ssid) == 0) return;
-
-    sd_card_lock(2000);
-    config_write_val(CONFIG_PATH, "ssid", ssid);
-    config_write_val(CONFIG_PATH, "pass", pass);
-    config_write_val(CONFIG_PATH, "dns", s_dns_str);
-
-    char auth[16] = {};
-    if (wifi_mgr_get_network_auth(0, auth, sizeof(auth)) &&
-        strcmp(auth, WIFI_AUTH_TYPE_ENTERPRISE) == 0) {
-        char identity[WIFI_MAX_IDENTITY_LEN] = {};
-        char un[WIFI_MAX_IDENTITY_LEN] = {};
-        char ep[WIFI_MAX_PASS_LEN] = {};
-        if (wifi_mgr_load_enterprise_params(0, identity, sizeof(identity),
-                                              un, sizeof(un), ep, sizeof(ep))) {
-            config_write_val(CONFIG_PATH, "auth", WIFI_AUTH_TYPE_ENTERPRISE);
-            config_write_val(CONFIG_PATH, "identity", identity);
-            config_write_val(CONFIG_PATH, "username", un);
-        }
-    }
-    sd_card_unlock();
-    ESP_LOGI(TAG, "Config saved: %s (DNS: %s)", ssid, s_dns_str);
+    wifi_save_config_to_sd();
 }
 
 static void set_dns(void)

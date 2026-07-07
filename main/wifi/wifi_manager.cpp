@@ -43,7 +43,7 @@ static void set_state(wifi_state_t new_state)
     if (old == new_state) return;
     s_state = new_state;
     ESP_LOGI(TAG, "state: %d -> %d", old, new_state);
-    // LED managed by app layer (album_app) — not here
+    wifi_mgr_update_led();
     if (s_callback) s_callback(old, new_state);
 }
 
