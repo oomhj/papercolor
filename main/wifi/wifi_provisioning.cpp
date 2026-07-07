@@ -48,7 +48,14 @@ static void cfg_write_val(const char* key, const char* val)
             strncat(tmp, line, sizeof(tmp) - strlen(tmp) - 1);
         fclose(f);
     }
-    char* old = strstr(tmp, key);
+    // Match "key=" at line start to avoid substring false positive
+    size_t klen = strlen(key);
+    char* old = NULL;
+    char* p = tmp;
+    while ((p = strstr(p, key)) != NULL) {
+        if ((p == tmp || *(p - 1) == '\n') && *(p + klen) == '=') { old = p; break; }
+        p++;
+    }
     if (old) {
         char* nl = strchr(old, '\n');
         if (nl) memmove(old, nl + 1, strlen(nl + 1) + 1);
@@ -79,9 +86,9 @@ void wifi_save_config_to_sd(void)
     cfg_write_val("auth", auth);  // always write auth (clears old enterprise)
 
     if (strcmp(auth, WIFI_AUTH_TYPE_ENTERPRISE) == 0) {
-        char identity[64] = {}, un[64] = {};
+        char identity[64] = {}, un[64] = {}, ep[64] = {};
         if (wifi_mgr_load_enterprise_params(0, identity, sizeof(identity),
-                                              un, sizeof(un), NULL, 0)) {
+                                              un, sizeof(un), ep, sizeof(ep))) {
             cfg_write_val("identity", identity);
             cfg_write_val("username", un);
         }
@@ -415,5 +422,6 @@ void wifi_prov_tick(void)
     if (now - s_last_activity > AP_TIMEOUT_MS) {
         ESP_LOGI(TAG, "AP idle timeout");
         wifi_prov_stop();
+        wifi_mgr_stop_ap();
     }
 }

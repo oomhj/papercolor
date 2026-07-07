@@ -46,7 +46,7 @@
 
 #define EPD_WIDTH            400
 #define EPD_HEIGHT           600
-#define EPD_ROTATION         1
+#define EPD_ROTATION         3
 #define EPD_COLOR_DEPTH      8
 
 // ═══════════════════════════════════════════════════════════════
