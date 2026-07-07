@@ -12,6 +12,7 @@ idf_component_register(
         "apps/album/album_app.cpp"
         "apps/album/image_downloader.cpp"
         "apps/album/image_renderer.cpp"
+        "apps/album/slide_show.cpp"
         "apps/album/filter.cpp"
     INCLUDE_DIRS
         "."
