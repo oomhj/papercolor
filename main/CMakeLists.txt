@@ -10,6 +10,7 @@ idf_component_register(
         "wifi/wifi_manager.cpp"
         "wifi/wifi_provisioning.cpp"
         "apps/album/album_app.cpp"
+        "apps/album/image_downloader.cpp"
         "apps/album/filter.cpp"
     INCLUDE_DIRS
         "."
