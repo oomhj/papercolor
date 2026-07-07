@@ -383,6 +383,7 @@ static esp_err_t handle_post_config(httpd_req_t* req)
         vTaskDelay(pdMS_TO_TICKS(500));  // let handler finish
         wifi_prov_stop();                // safe here (handler already returned)
         wifi_mgr_connect_sta(30000);
+        vTaskDelay(pdMS_TO_TICKS(5000)); // keep LED visible before potential sleep
         vTaskDelete(NULL);
     }, "prov_conn", 4096, NULL, 5, NULL);
 
