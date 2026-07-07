@@ -9,8 +9,6 @@
 
 #include "wifi_provisioning.h"
 #include "wifi_manager.h"
-#include "hal/led_driver.h"
-#include "hal/button.h"
 #include <cstdio>
 #include <cstring>
 #include <esp_log.h>
@@ -314,15 +312,18 @@ static esp_err_t handle_post_config(httpd_req_t* req)
 
     cJSON_Delete(json);
 
-    const char* ok = R"({"status":"ok","message":"Connecting..."})";
+    const char* ok = R"({"status":"ok","message":"Saved successfully"})";
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, ok, strlen(ok));
 
-    // Return from handler FIRST to avoid deadlocking httpd_stop().
-    // Stop AP mode - the app's main loop will reconnect via
-    // wifi_ensure_connected() on the next update cycle.
-    ESP_LOGI(TAG, "Provisioning done, stopping AP");
+    // Return from handler first, then connect in a deferred task
+    ESP_LOGI(TAG, "Provisioning done, connecting...");
     wifi_mgr_stop_ap();
+
+    // One-shot deferred connect (non-blocking for HTTP handler)
+    xTaskCreate([](void*) { wifi_mgr_connect_sta(30000); vTaskDelete(NULL); },
+                "prov_conn", 4096, NULL, 5, NULL);
+
     return ESP_OK;
 }
 
