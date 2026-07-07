@@ -26,7 +26,6 @@ static const char* TAG = "Album";
 
 // ── Forward declarations for static helpers ──────────────────
 
-static void led_no_network(void) { led_async_flash(255, 120, 0, 4); }
 static void led_failure(void)    { led_async_flash(255, 0, 0, 4); }
 static void led_success(void)    { led_async_flash(0, 255, 0, 4); }
 #define CONFIG_FILE "/sd/album/config.txt"
@@ -199,6 +198,7 @@ bool AlbumApp::init()
 void AlbumApp::deinit()
 {
     _running = false;
+    _slideshow.deinit();
     if (_sd_mounted) { sd_card_unmount(); _sd_mounted = false; }
 }
 

@@ -98,6 +98,12 @@ int SlideShow::scan_folder_images(void)
 //  Lifecycle
 // ═══════════════════════════════════════════════════════════════
 
+void SlideShow::deinit()
+{
+    if (_img_buf) { free(_img_buf); _img_buf = nullptr; _img_len = 0; }
+    if (_decoded_buf) { jpeg_free_align(_decoded_buf); _decoded_buf = nullptr; }
+}
+
 void SlideShow::init(int today)
 {
     current_idx = 1;

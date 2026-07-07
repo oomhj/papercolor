@@ -27,6 +27,7 @@ public:
 
     // ── Lifecycle ─────────────────────────────────────────────
     void init(int today);
+    void deinit();
 
     // ── Navigation ────────────────────────────────────────────
     void show_next();
