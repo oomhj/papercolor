@@ -110,30 +110,10 @@ const char* wifi_mgr_get_ap_ssid(void);
 /** @brief Set LED according to current state. */
 void wifi_mgr_update_led(void);
 
-// ── Retry & Provisioning ────────────────────────────────────
-
-/**
- * @brief Start retry loop: tries saved networks with backoff.
- * After max retries, auto-starts AP provisioning.
- * @param is_reconnect  true if called from a runtime disconnect (faster retry).
- */
-void wifi_mgr_start_retry_loop(bool is_reconnect);
-
-/** @brief Stop the retry loop (e.g. user pressed button). */
-void wifi_mgr_stop_retry(void);
+// ── Provisioning ───────────────────────────────────────────
 
 /** @brief Manually trigger AP provisioning (long-press callback). */
 void wifi_mgr_trigger_provisioning(void);
-
-/** @brief Restart the ESP. */
-void wifi_mgr_restart(void) __attribute__((noreturn));
-
-/**
- * @brief Call from main loop. Returns true if provisioning was triggered.
- *        Detects: BTN-A long press (3s) → trigger provisioning.
- *        BTN-C long press (5s) → deep sleep.
- */
-bool wifi_mgr_handle_buttons(void);
 
 #ifdef __cplusplus
 }

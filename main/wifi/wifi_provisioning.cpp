@@ -216,8 +216,7 @@ static void deferred_connect_task(void*)
     ESP_LOGI(TAG, "[PROV] exit: stopping HTTP + connecting");
     vTaskDelay(pdMS_TO_TICKS(500));
     wifi_prov_stop();
-    bool ok = wifi_mgr_connect_sta(30000);
-    wifi_mgr_stop_retry();
+    bool ok = wifi_mgr_connect_sta(10000);
     ESP_LOGI(TAG, "[PROV] exit: connect %s", ok ? "SUCCESS (IP)" : "FAILED");
     vTaskDelay(pdMS_TO_TICKS(5000));
     led_off();  // turn off LED, album resumes

@@ -7,7 +7,6 @@
 
 #include "wifi_manager.h"
 #include "wifi_provisioning.h"
-#include "hal/button.h"
 #include "hal/led_driver.h"
 #include <cstdio>
 #include <cstring>
@@ -395,103 +394,11 @@ const char*  wifi_mgr_get_ip(void)    { return s_ip_str; }
 const char*  wifi_mgr_get_ap_ssid(void) { return s_ap_ssid; }
 
 // ═══════════════════════════════════════════════════════════════
-//  Retry Loop
-// ═══════════════════════════════════════════════════════════════
-
-static TaskHandle_t s_retry_task = NULL;
-static volatile bool s_retry_abort = false;
-
-void wifi_mgr_stop_retry(void)
-{
-    s_retry_abort = true;
-    if (s_retry_task) {
-        vTaskDelete(s_retry_task);
-        s_retry_task = NULL;
-    }
-}
-
-static void retry_task_func(void* param)
-{
-    bool is_reconnect = (bool)param;
-
-    // ── Retry parameters ──
-    int max_attempts = is_reconnect ? 3 : 3;
-    uint32_t timeouts[] = {10000, 10000, 15000};
-    uint32_t delays[]   = {0, 5000, 15000};
-
-    for (int attempt = 0; attempt < max_attempts && !s_retry_abort; attempt++) {
-        ESP_LOGI(TAG, "Retry %d/%d", attempt + 1, max_attempts);
-        set_state(WIFI_STATE_STA_CN);
-
-        uint32_t wait_end = esp_timer_get_time() / 1000 +
-                           ((attempt > 0) ? delays[attempt - 1] : 0);
-        while (esp_timer_get_time() / 1000 < wait_end && !s_retry_abort) {
-            vTaskDelay(pdMS_TO_TICKS(100));
-        }
-        if (s_retry_abort) break;
-
-        // Try each saved slot
-        bool ok = false;
-        for (int slot = 0; slot < WIFI_SAVED_NETS && !ok && !s_retry_abort; slot++) {
-            char ssid[WIFI_MAX_SSID_LEN] = {};
-            char pass[WIFI_MAX_PASS_LEN] = {};
-            if (!wifi_mgr_load_network(slot, ssid, sizeof(ssid), pass, sizeof(pass)))
-                continue;
-
-            ESP_LOGI(TAG, "  try slot %d: %s", slot, ssid);
-            sta_connect_slot(slot, ssid, pass);
-
-            uint32_t deadline = esp_timer_get_time() / 1000 + timeouts[attempt];
-            while (esp_timer_get_time() / 1000 < deadline && !s_retry_abort) {
-                if (s_state == WIFI_STATE_STA_OK) { ok = true; break; }
-                if (s_state == WIFI_STATE_STA_FAIL) break;
-                vTaskDelay(pdMS_TO_TICKS(50));
-            }
-            if (ok || s_retry_abort) break;
-        }
-
-        if (ok) {
-            ESP_LOGI(TAG, "Connected on attempt %d", attempt + 1);
-            set_state(WIFI_STATE_STA_OK);
-            wifi_mgr_start_ap();
-            wifi_prov_start();
-            // Schedule AP auto-stop after 3 min
-            vTaskDelay(pdMS_TO_TICKS(180000));
-            wifi_prov_stop();
-            wifi_mgr_stop_ap();
-            wifi_mgr_update_led();
-            s_retry_task = NULL;
-            vTaskDelete(NULL);
-            return;
-        }
-    }
-
-    // ── All attempts exhausted → start AP provisioning ──
-    if (!s_retry_abort) {
-        ESP_LOGW(TAG, "All retries failed, starting AP provisioning");
-        wifi_mgr_trigger_provisioning();
-    }
-
-    s_retry_task = NULL;
-    vTaskDelete(NULL);
-}
-
-void wifi_mgr_start_retry_loop(bool is_reconnect)
-{
-    wifi_mgr_stop_retry();
-    s_retry_abort = false;
-    xTaskCreate(retry_task_func, "wifi_retry", 4096,
-                (void*)is_reconnect, 5, &s_retry_task);
-}
-
-// ═══════════════════════════════════════════════════════════════
 //  Provisioning Trigger
 // ═══════════════════════════════════════════════════════════════
 
 void wifi_mgr_trigger_provisioning(void)
 {
-    wifi_mgr_stop_retry();
-
     // Disconnect STA if connected
     esp_wifi_disconnect();
 
@@ -502,40 +409,4 @@ void wifi_mgr_trigger_provisioning(void)
     ESP_LOGI(TAG, "Provisioning mode: AP=%s", s_ap_ssid);
 }
 
-void wifi_mgr_restart(void)
-{
-    ESP_LOGI(TAG, "Restarting...");
-    vTaskDelay(pdMS_TO_TICKS(500));
-    esp_restart();
-    while (1) {}
-}
 
-// ═══════════════════════════════════════════════════════════════
-//  Button Handling
-// ═══════════════════════════════════════════════════════════════
-
-static uint32_t s_btn_up_pressed_ms = 0;
-static bool     s_btn_up_triggered  = false;
-
-bool wifi_mgr_handle_buttons(void)
-{
-    // BTN_TOP (G1): long press 3s → provisioning (LED managed by app)
-    if (BTN_TOP.isPressed()) {
-        if (!s_btn_up_pressed_ms) {
-            s_btn_up_pressed_ms = esp_timer_get_time() / 1000;
-            s_btn_up_triggered  = false;
-        }
-        uint32_t elapsed = (esp_timer_get_time() / 1000) - s_btn_up_pressed_ms;
-        if (elapsed >= 3000 && !s_btn_up_triggered) {
-            s_btn_up_triggered = true;
-            vTaskDelay(pdMS_TO_TICKS(200));
-            ESP_LOGI(TAG, "BTN_TOP long press: provisioning");
-            wifi_mgr_trigger_provisioning();
-            return true;
-        }
-    } else {
-        s_btn_up_pressed_ms = 0;
-    }
-
-    return false;
-}
