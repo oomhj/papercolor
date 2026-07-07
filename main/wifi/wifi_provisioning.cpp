@@ -9,6 +9,8 @@
 
 #include "wifi_provisioning.h"
 #include "wifi_manager.h"
+#include "hal/led_driver.h"
+#include "hal/button.h"
 #include <cstdio>
 #include <cstring>
 #include <esp_log.h>
@@ -312,23 +314,30 @@ static esp_err_t handle_post_config(httpd_req_t* req)
 
     cJSON_Delete(json);
 
-    const char* ok = R"({"status":"ok","message":"Saved. Restarting..."})";
+    const char* ok = R"({"status":"ok","message":"Connecting..."})";
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, ok, strlen(ok));
 
-    // LED: green blink 3 times
-    for (int i = 0; i < 3; i++) {
-        M5.Led.setBrightness(80); M5.Led.setAllColor(0, 255, 0); M5.Led.display();
-        vTaskDelay(pdMS_TO_TICKS(200));
-        M5.Led.setBrightness(0);  M5.Led.display();
-        vTaskDelay(pdMS_TO_TICKS(150));
-    }
-
-    // Return to STA mode (no restart needed)
-    vTaskDelay(pdMS_TO_TICKS(500));
+    // Stop provisioning server and AP
     wifi_prov_stop();
     wifi_mgr_stop_ap();
-    ESP_LOGI(TAG, "Provisioning done, returning to album");
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    // Connect to the newly saved network
+    ESP_LOGI(TAG, "Connecting to %s...", ssid);
+    led_async_color(255, 200, 0);  // yellow: connecting
+
+    if (wifi_mgr_connect_sta(15000)) {
+        ESP_LOGI(TAG, "Connected to %s", ssid);
+        led_async_flash(0, 255, 0, 4);  // green flash ~2s
+        vTaskDelay(pdMS_TO_TICKS(2500));
+        led_async_off();
+    } else {
+        ESP_LOGW(TAG, "Failed to connect to %s", ssid);
+        led_async_flash(255, 0, 0, 4);  // red flash ~2s
+    }
+
+    ESP_LOGI(TAG, "Provisioning done");
     return ESP_OK;
 }
 
