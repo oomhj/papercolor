@@ -21,6 +21,7 @@
 #include <nvs.h>
 #include <esp_mac.h>
 #include <esp_system.h>
+#include <esp_sleep.h>
 #include <M5Unified.h>
 
 static const char* TAG = "WiFiMgr";
@@ -245,6 +246,8 @@ void wifi_mgr_start_ap(void)
     ap.ap.authmode       = WIFI_AUTH_OPEN;
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_set_config(WIFI_IF_AP, &ap));
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_start());
+    // Disable sleep timers during provisioning
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
     set_state(WIFI_STATE_AP_IDLE);
     ESP_LOGI(TAG, "[PROV] enter: AP=%s", s_ap_ssid);
 }
