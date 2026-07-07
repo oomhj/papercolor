@@ -11,6 +11,7 @@
 #include "wifi_manager.h"
 #include "hal/sd_card.h"
 #include "hal/led_driver.h"
+#include "hal/config_file.h"
 #include <cstdio>
 #include <cstring>
 #include <esp_log.h>
@@ -38,36 +39,6 @@ static uint32_t             s_last_activity = 0;
 
 #define CONFIG_PATH "/sd/album/config.txt"
 
-static void cfg_write_val(const char* key, const char* val)
-{
-    char tmp[512] = {};
-    FILE* f = fopen(CONFIG_PATH, "r");
-    if (f) {
-        char line[128];
-        while (fgets(line, sizeof(line), f))
-            strncat(tmp, line, sizeof(tmp) - strlen(tmp) - 1);
-        fclose(f);
-    }
-    // Match "key=" at line start to avoid substring false positive
-    size_t klen = strlen(key);
-    char* old = NULL;
-    char* p = tmp;
-    while ((p = strstr(p, key)) != NULL) {
-        if ((p == tmp || *(p - 1) == '\n') && *(p + klen) == '=') { old = p; break; }
-        p++;
-    }
-    if (old) {
-        char* nl = strchr(old, '\n');
-        if (nl) memmove(old, nl + 1, strlen(nl + 1) + 1);
-        else *old = '\0';
-    }
-    char newline[128];
-    snprintf(newline, sizeof(newline), "%s=%s\n", key, val);
-    strncat(tmp, newline, sizeof(tmp) - strlen(tmp) - 1);
-    f = fopen(CONFIG_PATH, "w");
-    if (f) { fputs(tmp, f); fclose(f); }
-}
-
 /** Save WiFi config from NVS slot 0 to SD /sd/album/config.txt */
 void wifi_save_config_to_sd(void)
 {
@@ -76,21 +47,21 @@ void wifi_save_config_to_sd(void)
     if (strlen(ssid) == 0) return;
 
     sd_card_lock(2000);
-    cfg_write_val("ssid", ssid);
-    cfg_write_val("pass", pass);
+    config_write_val(CONFIG_PATH, "ssid", ssid);
+    config_write_val(CONFIG_PATH, "pass", pass);
 
     char auth[16] = {};
     if (!wifi_mgr_get_network_auth(0, auth, sizeof(auth)))
         strcpy(auth, WIFI_AUTH_TYPE_PSK);
 
-    cfg_write_val("auth", auth);  // always write auth (clears old enterprise)
+    config_write_val(CONFIG_PATH, "auth", auth);  // always write auth (clears old enterprise)
 
     if (strcmp(auth, WIFI_AUTH_TYPE_ENTERPRISE) == 0) {
         char identity[64] = {}, un[64] = {}, ep[64] = {};
         if (wifi_mgr_load_enterprise_params(0, identity, sizeof(identity),
                                               un, sizeof(un), ep, sizeof(ep))) {
-            cfg_write_val("identity", identity);
-            cfg_write_val("username", un);
+            config_write_val(CONFIG_PATH, "identity", identity);
+            config_write_val(CONFIG_PATH, "username", un);
         }
     }
     sd_card_unlock();

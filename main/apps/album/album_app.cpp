@@ -10,6 +10,7 @@
 #include "hal/hal.h"
 #include "hal/battery.h"
 #include "hal/sd_card.h"
+#include "hal/config_file.h"
 #include "hal/led_driver.h"
 #include "wifi_manager.h"
 #include "wifi_provisioning.h"
@@ -56,55 +57,7 @@ static void led_success(void)
 static char s_dns_str[32] = "114.114.114.114";
 #define CONFIG_PATH "/sd/album/config.txt"
 
-// Read a value for key from a key=value file. Returns true if found.
-static bool config_read_val(const char* path, const char* key, char* val, size_t val_sz)
-{
-    FILE* f = fopen(path, "r");
-    if (!f) return false;
-    char line[128];
-    size_t klen = strlen(key);
-    bool found = false;
-    while (fgets(line, sizeof(line), f)) {
-        line[strcspn(line, "\r\n")] = '\0';
-        if (strncmp(line, key, klen) == 0 && line[klen] == '=') {
-            size_t vlen = strlen(line + klen + 1);
-            if (vlen >= val_sz) vlen = val_sz - 1;
-            memcpy(val, line + klen + 1, vlen);
-            val[vlen] = '\0';
-            found = true;
-            break;
-        }
-    }
-    fclose(f);
-    return found;
-}
 
-static void config_write_val(const char* path, const char* key, const char* val)
-{
-    // Read existing lines, update or append
-    char tmp[512] = {};
-    FILE* f = fopen(path, "r");
-    if (f) {
-        char line[128];
-        while (fgets(line, sizeof(line), f))
-            strncat(tmp, line, sizeof(tmp) - strlen(tmp) - 1);
-        fclose(f);
-    }
-    // Remove old line with same key
-    char* old = strstr(tmp, key);
-    if (old) {
-        char* nl = strchr(old, '\n');
-        if (nl) memmove(old, nl + 1, strlen(nl + 1) + 1);
-        else *old = '\0';
-    }
-    // Append new
-    char newline[128];
-    snprintf(newline, sizeof(newline), "%s=%s\n", key, val);
-    strncat(tmp, newline, sizeof(tmp) - strlen(tmp) - 1);
-
-    f = fopen(path, "w");
-    if (f) { fputs(tmp, f); fclose(f); }
-}
 
 static bool load_wifi_from_sd(void)
 {

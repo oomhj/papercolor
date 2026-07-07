@@ -3,6 +3,7 @@ idf_component_register(
         "main.cpp"
         "hal/hal.cpp"
         "hal/battery.cpp"
+        "hal/config_file.cpp"
         "hal/led_driver.cpp"
         "hal/spi_bus.cpp"
         "hal/sd_card.cpp"
@@ -13,6 +14,7 @@ idf_component_register(
     INCLUDE_DIRS
         "."
         "../include"
+        "hal"
         "wifi"
     REQUIRES
         M5Unified
