@@ -136,6 +136,9 @@ bool AlbumApp::init()
 
     _slideshow.init(today);
 
+    // RTC wake: restore index that init() just reset to 1
+    if (rtc_wake) _slideshow.current_idx = rtc_idx;
+
     if (!_sd_mounted) {
         ESP_LOGI(TAG, "No SD card — single-image mode");
         if (rtc_wake) {
