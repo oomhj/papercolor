@@ -67,6 +67,20 @@ void led_async_off(void);
 /** @brief Stop all effects and turn off. Alias for led_async_off(). */
 void led_async_stop(void);
 
+/**
+ * @brief Prepare LED for deep sleep. Turns off the LED synchronously and
+ *        ensures the RMT data transmission completes before CPU halts.
+ *        Call this before esp_deep_sleep_start() from any sleep path.
+ *
+ * SK6812/WS2812 intelligent LEDs hold their last color in internal registers
+ * after the CPU stops sending data. This function sends a zero-brightness
+ * frame so the LED stays off during the entire sleep period.
+ *
+ * This is a synchronous, non-queued operation — it bypasses the async LED
+ * task, so ongoing flash/breath effects do not delay sleep entry.
+ */
+void led_before_sleep(void);
+
 #ifdef __cplusplus
 }
 #endif

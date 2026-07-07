@@ -216,3 +216,10 @@ void led_async_stop(void)
 {
     led_async_off();
 }
+
+void led_before_sleep(void)
+{
+    // Synchronous: bypasses the LED task, sends zero-brightness frame directly
+    led_off();
+    vTaskDelay(pdMS_TO_TICKS(10));   // ensure RMT transmission completes
+}

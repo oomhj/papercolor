@@ -638,6 +638,12 @@ static uint64_t s_last_activity_ms = 0;
 
 void AlbumApp::go_to_sleep(void)
 {
+    // Turn off LED before deep sleep — SK6812 holds its last color
+    // in internal registers even after CPU stops. Without this, async
+    // flash effects running on the LED task can leave the LED stuck
+    // orange during the entire 30-minute deep sleep.
+    led_before_sleep();
+
     // Check battery — if low, permanent shutdown
     if (bat_is_low()) {
         ESP_LOGW(TAG, "Battery low (%u%%), shutting down permanently", bat_get_pct());

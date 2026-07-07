@@ -12,6 +12,7 @@
 
 #include "hal.h"
 #include "config.h"
+#include "led_driver.h"
 #include <cstdio>
 #include <ctime>
 #include <esp_log.h>
@@ -209,6 +210,7 @@ void pc_hal_set_epd_power(bool on)
 void pc_hal_deep_sleep(void)
 {
     ESP_LOGI(TAG, "Entering deep sleep");
+    led_before_sleep();  // SK6812 holds last color — turn off before CPU stops
     M5.Display.sleep();
     vTaskDelay(pdMS_TO_TICKS(100));
 
