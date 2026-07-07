@@ -240,7 +240,6 @@ static void deferred_connect_task(void*)
     ESP_LOGI(TAG, "[PROV] exit: stopping HTTP + connecting");
     vTaskDelay(pdMS_TO_TICKS(500));
     wifi_prov_stop();
-    wifi_mgr_stop_ap();
     bool ok = wifi_mgr_connect_sta(30000);
     wifi_mgr_stop_retry();
     ESP_LOGI(TAG, "[PROV] exit: connect %s", ok ? "SUCCESS (IP)" : "FAILED");
@@ -418,6 +417,5 @@ void wifi_prov_tick(void)
     if (now - s_last_activity > AP_TIMEOUT_MS) {
         ESP_LOGI(TAG, "AP idle timeout");
         wifi_prov_stop();
-        wifi_mgr_stop_ap();
     }
 }
