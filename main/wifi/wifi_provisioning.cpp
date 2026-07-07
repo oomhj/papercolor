@@ -10,6 +10,7 @@
 #include "wifi_provisioning.h"
 #include "wifi_manager.h"
 #include "hal/sd_card.h"
+#include "hal/led_driver.h"
 #include <cstdio>
 #include <cstring>
 #include <esp_log.h>
@@ -244,6 +245,7 @@ static void deferred_connect_task(void*)
     wifi_mgr_stop_retry();
     ESP_LOGI(TAG, "[PROV] exit: connect %s", ok ? "SUCCESS (IP)" : "FAILED");
     vTaskDelay(pdMS_TO_TICKS(5000));
+    led_off();  // turn off LED, album resumes
     vTaskDelete(NULL);
 }
 
