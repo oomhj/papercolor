@@ -52,6 +52,16 @@ static const char* CONFIG_HTML = R"HTMLDELIM(
   .card{background:#fff;border-radius:12px;padding:20px;margin:16px 0;box-shadow:0 2px 8px rgba(0,0,0,0.08)}
   label{display:block;font-size:14px;color:#666;margin:12px 0 4px}
   input{width:100%;padding:12px;border:1px solid #ddd;border-radius:8px;font-size:16px}
+  .eap-field{display:none}
+  .toggle-wrap{display:flex;align-items:center;gap:12px;margin:12px 0;padding:12px;background:#f0f4ff;border-radius:8px}
+  .toggle{position:relative;width:52px;height:28px;flex-shrink:0;cursor:pointer}
+  .toggle input{opacity:0;width:0;height:0}
+  .toggle .slider{position:absolute;inset:0;background:#ccc;border-radius:28px;transition:.3s}
+  .toggle .slider::before{content:"";position:absolute;left:3px;top:3px;width:22px;height:22px;background:#fff;border-radius:50%;transition:.3s}
+  .toggle input:checked+.slider{background:#007aff}
+  .toggle input:checked+.slider::before{transform:translateX(24px)}
+  .toggle-label{font-size:14px;font-weight:600;color:#333}
+  .toggle-hint{font-size:12px;color:#999}
   .btn{width:100%;padding:14px;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer;margin-top:16px}
   .btn-primary{background:#007aff;color:#fff}
   .btn-primary:disabled{opacity:0.5}
@@ -71,8 +81,22 @@ static const char* CONFIG_HTML = R"HTMLDELIM(
 <div class="card">
   <label>WiFi Name (SSID)</label>
   <input id="ssid" placeholder="Select from list or type">
+  <div class="toggle-wrap">
+    <label class="toggle">
+      <input type="checkbox" id="authToggle" onchange="toggleAuth()">
+      <span class="slider"></span>
+    </label>
+    <div>
+      <div class="toggle-label">802.1x 企业认证</div>
+      <div class="toggle-hint">WPA2-Enterprise / PEAP-MSCHAPv2</div>
+    </div>
+  </div>
+  <div id="eapFields" class="eap-field">
+    <label>Username (EAP Identity)</label>
+    <input id="username" placeholder="User@domain.com">
+  </div>
   <label>Password</label>
-  <input id="pass" type="password" placeholder="Leave blank if open">
+  <input id="pass" type="password" placeholder="WiFi password / EAP password">
   <button class="btn btn-secondary" onclick="scan()">🔍 Scan Networks</button>
   <div id="scanList"></div>
   <button class="btn btn-primary" onclick="connect()" id="connectBtn">Connect</button>
@@ -100,17 +124,30 @@ async function scan() {
   }
 }
 function pick(s) { document.getElementById('ssid').value = s; }
+function toggleAuth() {
+  const on = document.getElementById('authToggle').checked;
+  document.getElementById('eapFields').style.display = on ? 'block' : 'none';
+  document.getElementById('pass').placeholder = on ? 'EAP password' : 'WiFi password (leave blank if open)';
+}
 async function connect() {
   const ssid = document.getElementById('ssid').value.trim();
   if (!ssid) { show('Please enter SSID', 'err'); return; }
+  const auth = document.getElementById('authToggle').checked ? 'enterprise' : 'psk';
+  const username = document.getElementById('username').value.trim();
   const pass = document.getElementById('pass').value;
+  if (auth === 'enterprise' && !username) {
+    show('Username required for Enterprise', 'err'); return;
+  }
+  const body = auth === 'enterprise'
+    ? JSON.stringify({ssid, auth, identity: username, username, pass})
+    : JSON.stringify({ssid, pass});
   document.getElementById('connectBtn').disabled = true;
   show('Connecting...', 'info');
   try {
     const r = await fetch('/api/config', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ssid, pass})
+      body
     });
     const j = await r.json();
     if (j.status === 'ok') {
@@ -246,6 +283,7 @@ static esp_err_t handle_post_config(httpd_req_t* req)
     }
 
     cJSON* j_ssid = cJSON_GetObjectItem(json, "ssid");
+    cJSON* j_auth = cJSON_GetObjectItem(json, "auth");
     cJSON* j_pass = cJSON_GetObjectItem(json, "pass");
 
     if (!j_ssid || !cJSON_IsString(j_ssid)) {
@@ -257,10 +295,20 @@ static esp_err_t handle_post_config(httpd_req_t* req)
     }
 
     const char* ssid = j_ssid->valuestring;
+    const char* auth = (j_auth && cJSON_IsString(j_auth)) ? j_auth->valuestring : WIFI_AUTH_TYPE_PSK;
     const char* pass = (j_pass && cJSON_IsString(j_pass)) ? j_pass->valuestring : "";
 
-    ESP_LOGI(TAG, "Config received: %s", ssid);
-    wifi_mgr_save_network(0, ssid, pass);
+    if (strcmp(auth, WIFI_AUTH_TYPE_ENTERPRISE) == 0) {
+        cJSON* j_id = cJSON_GetObjectItem(json, "identity");
+        cJSON* j_un = cJSON_GetObjectItem(json, "username");
+        const char* identity = (j_id && cJSON_IsString(j_id)) ? j_id->valuestring : "";
+        const char* username = (j_un && cJSON_IsString(j_un)) ? j_un->valuestring : identity;
+        ESP_LOGI(TAG, "Config received: %s (Enterprise, id=%s)", ssid, identity);
+        wifi_mgr_save_network_ext(0, ssid, WIFI_AUTH_TYPE_ENTERPRISE, identity, username, pass);
+    } else {
+        ESP_LOGI(TAG, "Config received: %s (PSK)", ssid);
+        wifi_mgr_save_network(0, ssid, pass);
+    }
 
     cJSON_Delete(json);
 

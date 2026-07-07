@@ -14,6 +14,7 @@
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <esp_wifi.h>
+#include <esp_eap_client.h>
 #include <esp_event.h>
 #include <esp_netif.h>
 #include <nvs_flash.h>
@@ -150,12 +151,55 @@ void wifi_mgr_init(void)
 
 void wifi_mgr_on_event(wifi_event_cb_t cb) { s_callback = cb; }
 
+// ── Enterprise connect helper ──────────────────────────────────
+
+static void sta_connect_slot(int slot, const char* ssid, const char* pass)
+{
+    char auth[16] = {};
+    if (!wifi_mgr_get_network_auth(slot, auth, sizeof(auth)))
+        strcpy(auth, "psk");
+
+    bool is_enterprise = (strcmp(auth, WIFI_AUTH_TYPE_ENTERPRISE) == 0);
+    ESP_LOGI(TAG, "  connecting slot %d: %s (%s)", slot, ssid, is_enterprise ? "Enterprise" : "PSK");
+
+    wifi_config_t wc = {};
+    strcpy((char*)wc.sta.ssid, ssid);
+
+    if (is_enterprise) {
+        // Step 1: set mode + config
+        esp_wifi_set_mode(WIFI_MODE_STA);
+        esp_wifi_set_config(WIFI_IF_STA, &wc);
+
+        // Step 2: load and set EAP params
+        char identity[WIFI_MAX_IDENTITY_LEN] = {};
+        char username[WIFI_MAX_IDENTITY_LEN] = {};
+        char eap_pass[WIFI_MAX_PASS_LEN]     = {};
+        wifi_mgr_load_enterprise_params(slot, identity, sizeof(identity),
+                                         username, sizeof(username),
+                                         eap_pass, sizeof(eap_pass));
+        esp_eap_client_set_identity((const uint8_t*)identity, strlen(identity));
+        esp_eap_client_set_username((const uint8_t*)username, strlen(username));
+        if (eap_pass[0])
+            esp_eap_client_set_password((const uint8_t*)eap_pass, strlen(eap_pass));
+        esp_eap_client_set_eap_methods(ESP_EAP_TYPE_PEAP);
+        esp_eap_client_set_disable_time_check(true);
+
+        // Step 3: enable enterprise + start
+        esp_wifi_sta_enterprise_enable();
+        esp_wifi_start();
+    } else {
+        if (pass[0]) strcpy((char*)wc.sta.password, pass);
+        wc.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+        esp_wifi_set_mode(WIFI_MODE_STA);
+        esp_wifi_set_config(WIFI_IF_STA, &wc);
+        esp_wifi_start();
+    }
+}
+
 // ── STA Connect ──────────────────────────────────────────────
 
 bool wifi_mgr_connect_sta(uint32_t timeout_ms)
 {
-    esp_wifi_set_mode(WIFI_MODE_STA);
-
     // Try each saved network until one works
     for (int slot = 0; slot < WIFI_SAVED_NETS; slot++) {
         char ssid[WIFI_MAX_SSID_LEN] = {};
@@ -163,15 +207,7 @@ bool wifi_mgr_connect_sta(uint32_t timeout_ms)
         if (!wifi_mgr_load_network(slot, ssid, sizeof(ssid), pass, sizeof(pass)))
             continue;
 
-        ESP_LOGI(TAG, "Trying slot %d: %s (pass: %s)", slot, ssid, pass[0] ? pass : "<none>");
-        wifi_config_t wc = {};
-        strcpy((char*)wc.sta.ssid, ssid);
-        if (pass[0]) strcpy((char*)wc.sta.password, pass);
-        wc.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
-        esp_wifi_set_config(WIFI_IF_STA, &wc);
-        esp_wifi_start();
-        esp_wifi_connect();
-
+        sta_connect_slot(slot, ssid, pass);
         set_state(WIFI_STATE_STA_CN);
 
         uint32_t deadline = esp_timer_get_time() / 1000 + timeout_ms;
@@ -189,6 +225,7 @@ bool wifi_mgr_connect_sta(uint32_t timeout_ms)
 
 void wifi_mgr_disconnect_sta(void)
 {
+    esp_wifi_sta_enterprise_disable();
     esp_wifi_disconnect();
     esp_wifi_set_mode(WIFI_MODE_NULL);
     set_state(WIFI_STATE_OFF);
@@ -227,15 +264,16 @@ bool wifi_mgr_save_network(int slot, const char* ssid, const char* pass)
     nvs_handle_t h;
     if (nvs_open("wifi", NVS_READWRITE, &h) != ESP_OK) return false;
 
-    char key_ssid[16], key_pass[16];
-    snprintf(key_ssid, sizeof(key_ssid), "ssid_%d", slot);
-    snprintf(key_pass, sizeof(key_pass), "pass_%d", slot);
-
-    nvs_set_str(h, key_ssid, ssid);
-    nvs_set_str(h, key_pass, pass ? pass : "");
+    char key[16];
+    snprintf(key, sizeof(key), "ssid_%d", slot);
+    nvs_set_str(h, key, ssid);
+    snprintf(key, sizeof(key), "pass_%d", slot);
+    nvs_set_str(h, key, pass ? pass : "");
+    snprintf(key, sizeof(key), "auth_%d", slot);
+    nvs_set_str(h, key, WIFI_AUTH_TYPE_PSK);
     nvs_commit(h);
     nvs_close(h);
-    ESP_LOGI(TAG, "Saved slot %d: %s", slot, ssid);
+    ESP_LOGI(TAG, "Saved slot %d (PSK): %s", slot, ssid);
     return true;
 }
 
@@ -257,6 +295,83 @@ bool wifi_mgr_load_network(int slot, char* ssid, size_t ssid_sz, char* pass, siz
     nvs_get_str(h, key_pass, pass, &len);  // optional
 
     nvs_close(h);
+    return true;
+}
+
+bool wifi_mgr_save_network_ext(int slot, const char* ssid, const char* auth,
+                                const char* identity, const char* username,
+                                const char* pass)
+{
+    if (slot < 0 || slot >= WIFI_SAVED_NETS || !ssid || !auth) return false;
+    nvs_handle_t h;
+    if (nvs_open("wifi", NVS_READWRITE, &h) != ESP_OK) return false;
+
+    char key[16];
+    snprintf(key, sizeof(key), "ssid_%d", slot);
+    nvs_set_str(h, key, ssid);
+    snprintf(key, sizeof(key), "pass_%d", slot);
+    nvs_set_str(h, key, pass ? pass : "");
+    snprintf(key, sizeof(key), "auth_%d", slot);
+    nvs_set_str(h, key, auth);
+
+    snprintf(key, sizeof(key), "identity_%d", slot);
+    nvs_set_str(h, key, (identity && strcmp(auth, WIFI_AUTH_TYPE_ENTERPRISE) == 0) ? identity : "");
+    snprintf(key, sizeof(key), "username_%d", slot);
+    nvs_set_str(h, key, (username && strcmp(auth, WIFI_AUTH_TYPE_ENTERPRISE) == 0) ? username : "");
+
+    nvs_commit(h);
+    nvs_close(h);
+    ESP_LOGI(TAG, "Saved slot %d (%s): %s", slot, auth, ssid);
+    return true;
+}
+
+bool wifi_mgr_load_enterprise_params(int slot, char* identity, size_t identity_sz,
+                                      char* username, size_t username_sz,
+                                      char* pass, size_t pass_sz)
+{
+    char auth[16] = {};
+    if (!wifi_mgr_get_network_auth(slot, auth, sizeof(auth))) return false;
+    if (strcmp(auth, WIFI_AUTH_TYPE_ENTERPRISE) != 0) return false;
+
+    nvs_handle_t h;
+    if (nvs_open("wifi", NVS_READONLY, &h) != ESP_OK) return false;
+
+    char key[16];
+    size_t len;
+
+    snprintf(key, sizeof(key), "identity_%d", slot);
+    len = identity_sz;
+    if (nvs_get_str(h, key, identity, &len) != ESP_OK) identity[0] = '\0';
+
+    snprintf(key, sizeof(key), "username_%d", slot);
+    len = username_sz;
+    if (nvs_get_str(h, key, username, &len) != ESP_OK) username[0] = '\0';
+
+    snprintf(key, sizeof(key), "pass_%d", slot);
+    len = pass_sz;
+    if (nvs_get_str(h, key, pass, &len) != ESP_OK) pass[0] = '\0';
+
+    nvs_close(h);
+    return true;
+}
+
+bool wifi_mgr_get_network_auth(int slot, char* auth, size_t auth_sz)
+{
+    if (slot < 0 || slot >= WIFI_SAVED_NETS) return false;
+    nvs_handle_t h;
+    if (nvs_open("wifi", NVS_READONLY, &h) != ESP_OK) return false;
+
+    char key[16];
+    snprintf(key, sizeof(key), "auth_%d", slot);
+    size_t len = auth_sz;
+    esp_err_t e = nvs_get_str(h, key, auth, &len);
+    nvs_close(h);
+
+    if (e != ESP_OK) {
+        // Legacy slot without auth field -> assume PSK
+        snprintf(auth, auth_sz, "%s", WIFI_AUTH_TYPE_PSK);
+        return true;
+    }
     return true;
 }
 
@@ -321,13 +436,7 @@ static void retry_task_func(void* param)
                 continue;
 
             ESP_LOGI(TAG, "  try slot %d: %s", slot, ssid);
-            wifi_config_t wc = {};
-            strcpy((char*)wc.sta.ssid, ssid);
-            if (pass[0]) strcpy((char*)wc.sta.password, pass);
-            esp_wifi_set_mode(WIFI_MODE_STA);
-            esp_wifi_set_config(WIFI_IF_STA, &wc);
-            esp_wifi_start();
-            esp_wifi_connect();
+            sta_connect_slot(slot, ssid, pass);
 
             uint32_t deadline = esp_timer_get_time() / 1000 + timeouts[attempt];
             while (esp_timer_get_time() / 1000 < deadline && !s_retry_abort) {

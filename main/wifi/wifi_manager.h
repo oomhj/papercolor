@@ -16,10 +16,16 @@ extern "C" {
 
 // ── Configuration ────────────────────────────────────────────
 
-#define WIFI_MAX_SSID_LEN   32
-#define WIFI_MAX_PASS_LEN   64
-#define WIFI_SAVED_NETS     3       // number of saved networks
-#define WIFI_AP_SSID_PREFIX "PaperColor-"
+#define WIFI_MAX_SSID_LEN     32
+#define WIFI_MAX_PASS_LEN     64
+#define WIFI_MAX_IDENTITY_LEN 64
+#define WIFI_SAVED_NETS       3       // number of saved networks
+#define WIFI_AP_SSID_PREFIX   "PaperColor-"
+
+// Auth mode values stored in NVS (prefixed to avoid collision with
+// ESP-IDF's wifi_auth_mode_t enum which defines e.g. WIFI_AUTH_ENTERPRISE)
+#define WIFI_AUTH_TYPE_PSK        "psk"
+#define WIFI_AUTH_TYPE_ENTERPRISE "enterprise"
 
 // ── State ────────────────────────────────────────────────────
 
@@ -66,6 +72,28 @@ bool wifi_mgr_save_network(int slot, const char* ssid, const char* pass);
 
 /** @brief Read a saved network from NVS. Returns false if slot empty. */
 bool wifi_mgr_load_network(int slot, char* ssid, size_t ssid_sz, char* pass, size_t pass_sz);
+
+/**
+ * @brief Save PSK or Enterprise network config to NVS.
+ *        @p auth is "psk" or "enterprise". For PSK, identity/username are ignored.
+ */
+bool wifi_mgr_save_network_ext(int slot, const char* ssid, const char* auth,
+                                const char* identity, const char* username,
+                                const char* pass);
+
+/**
+ * @brief Load enterprise auth params for a slot.
+ *        Returns false if slot empty or auth is not "enterprise".
+ */
+bool wifi_mgr_load_enterprise_params(int slot, char* identity, size_t identity_sz,
+                                      char* username, size_t username_sz,
+                                      char* pass, size_t pass_sz);
+
+/**
+ * @brief Read auth mode for a saved network slot.
+ *        Writes "psk" or "enterprise". Returns false if slot empty.
+ */
+bool wifi_mgr_get_network_auth(int slot, char* auth, size_t auth_sz);
 
 /** @brief Erase all saved WiFi configs from NVS. */
 void wifi_mgr_erase_all(void);

@@ -108,6 +108,7 @@ static void config_write_val(const char* path, const char* key, const char* val)
 static bool load_wifi_from_sd(void)
 {
     char ssid[64] = {}, pass[64] = {}, dns[32] = {};
+    char auth[16] = {}, identity[64] = {}, username[64] = {};
 
     // Try new config.txt first, then legacy wifi.txt
     sd_card_lock(2000);
@@ -127,6 +128,9 @@ static bool load_wifi_from_sd(void)
         }
     } else {
         config_read_val(CONFIG_PATH, "dns", dns, sizeof(dns));
+        config_read_val(CONFIG_PATH, "auth", auth, sizeof(auth));
+        config_read_val(CONFIG_PATH, "identity", identity, sizeof(identity));
+        config_read_val(CONFIG_PATH, "username", username, sizeof(username));
     }
     sd_card_unlock();
     if (!ok) return false;
@@ -139,8 +143,17 @@ static bool load_wifi_from_sd(void)
         s_dns_str[n] = '\0';
     }
 
-    ESP_LOGI(TAG, "WiFi loaded: %s (DNS: %s)", ssid, s_dns_str);
-    wifi_mgr_save_network(0, ssid, pass);
+    bool is_enterprise = (strcmp(auth, WIFI_AUTH_TYPE_ENTERPRISE) == 0);
+    ESP_LOGI(TAG, "WiFi loaded: %s (%s)", ssid, is_enterprise ? "Enterprise" : "PSK");
+
+    if (is_enterprise) {
+        if (strlen(identity) == 0) strcpy(identity, username);
+        if (strlen(identity) == 0) strcpy(identity, ssid);
+        wifi_mgr_save_network_ext(0, ssid, WIFI_AUTH_TYPE_ENTERPRISE,
+                                   identity, username[0] ? username : identity, pass);
+    } else {
+        wifi_mgr_save_network(0, ssid, pass);
+    }
     return true;
 }
 
@@ -154,6 +167,20 @@ static void save_wifi_to_sd(void)
     config_write_val(CONFIG_PATH, "ssid", ssid);
     config_write_val(CONFIG_PATH, "pass", pass);
     config_write_val(CONFIG_PATH, "dns", s_dns_str);
+
+    char auth[16] = {};
+    if (wifi_mgr_get_network_auth(0, auth, sizeof(auth)) &&
+        strcmp(auth, WIFI_AUTH_TYPE_ENTERPRISE) == 0) {
+        char identity[WIFI_MAX_IDENTITY_LEN] = {};
+        char un[WIFI_MAX_IDENTITY_LEN] = {};
+        char ep[WIFI_MAX_PASS_LEN] = {};
+        if (wifi_mgr_load_enterprise_params(0, identity, sizeof(identity),
+                                              un, sizeof(un), ep, sizeof(ep))) {
+            config_write_val(CONFIG_PATH, "auth", WIFI_AUTH_TYPE_ENTERPRISE);
+            config_write_val(CONFIG_PATH, "identity", identity);
+            config_write_val(CONFIG_PATH, "username", un);
+        }
+    }
     sd_card_unlock();
     ESP_LOGI(TAG, "Config saved: %s (DNS: %s)", ssid, s_dns_str);
 }

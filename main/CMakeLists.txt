@@ -29,4 +29,5 @@ idf_component_register(
         mbedtls
         json
         fatfs
+        wpa_supplicant
 )
