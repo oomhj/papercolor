@@ -14,7 +14,6 @@
 #include <cstdint>
 #include <cstddef>
 
-// Save current WiFi config from NVS to SD /sd/album/config.txt
 
 #define ALBUM_DIR    "/sd/album"
 #define ALBUM_MAX_IMAGES  10

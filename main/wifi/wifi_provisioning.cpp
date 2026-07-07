@@ -2,7 +2,7 @@
  * PaperColor — WiFi Provisioning Server
  *
  * Provides:
- *  - DNS hijack (all domains → 192.168.4.1)
+ *  - HTTP provisioning server
  *  - HTTP server with config page + REST APIs
  *  - AP auto-shutdown timer
  */
@@ -16,8 +16,6 @@
 #include <esp_log.h>
 #include <esp_http_server.h>
 #include <esp_wifi.h>
-#include <lwip/sockets.h>
-#include <lwip/netdb.h>
 #include <cJSON.h>
 #include <M5Unified.hpp>
 
