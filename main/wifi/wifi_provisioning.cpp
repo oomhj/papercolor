@@ -315,13 +315,18 @@ static esp_err_t handle_post_config(httpd_req_t* req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, ok, strlen(ok));
 
-    // Return from handler first, then connect in a deferred task
-    ESP_LOGI(TAG, "Provisioning done, connecting...");
+    // Return from handler first to avoid deadlocking httpd_stop().
+    // Deferred task stops prov, then connects.
+    ESP_LOGI(TAG, "Provisioning done, stopping AP");
     wifi_mgr_stop_ap();
 
-    // One-shot deferred connect (non-blocking for HTTP handler)
-    xTaskCreate([](void*) { wifi_mgr_connect_sta(30000); vTaskDelete(NULL); },
-                "prov_conn", 4096, NULL, 5, NULL);
+    xTaskCreate([](void*) {
+        vTaskDelay(pdMS_TO_TICKS(500));  // let handler finish
+        wifi_prov_stop();                // safe here (handler already returned)
+        esp_wifi_set_mode(WIFI_MODE_STA);
+        wifi_mgr_connect_sta(30000);
+        vTaskDelete(NULL);
+    }, "prov_conn", 4096, NULL, 5, NULL);
 
     return ESP_OK;
 }
