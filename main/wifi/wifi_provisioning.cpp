@@ -74,12 +74,15 @@ void wifi_save_config_to_sd(void)
     cfg_write_val("pass", pass);
 
     char auth[16] = {};
-    if (wifi_mgr_get_network_auth(0, auth, sizeof(auth)) &&
-        strcmp(auth, WIFI_AUTH_TYPE_ENTERPRISE) == 0) {
+    if (!wifi_mgr_get_network_auth(0, auth, sizeof(auth)))
+        strcpy(auth, WIFI_AUTH_TYPE_PSK);
+
+    cfg_write_val("auth", auth);  // always write auth (clears old enterprise)
+
+    if (strcmp(auth, WIFI_AUTH_TYPE_ENTERPRISE) == 0) {
         char identity[64] = {}, un[64] = {};
         if (wifi_mgr_load_enterprise_params(0, identity, sizeof(identity),
                                               un, sizeof(un), NULL, 0)) {
-            cfg_write_val("auth", WIFI_AUTH_TYPE_ENTERPRISE);
             cfg_write_val("identity", identity);
             cfg_write_val("username", un);
         }
