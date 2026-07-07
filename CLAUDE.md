@@ -57,8 +57,12 @@ main/
 │   └── button.h          — BTN_UP/DOWN/TOP aliases
 ├── apps/
 │   ├── album/            — Daily photo slideshow (current main)
-│   │   ├── album_app.h   — Lifecycle + slideshow state
-│   │   └── album_app.cpp — SD cache, WiFi update, JPEG decode, EPD display
+│   │   ├── album_app.{h,cpp}          — Lifecycle orchestrator
+│   │   ├── slide_show.{h,cpp}         — Index/navigation/download pipeline
+│   │   ├── power_manager.{h,cpp}      — Idle tracking, deep sleep, RTC RAM
+│   │   ├── image_downloader.{h,cpp}   — HTTP fetch + SD save
+│   │   ├── image_renderer.{h,cpp}     — JPEG decode → dither → EPD refresh
+│   │   └── config_file.h/cpp          — Key=value config parser
 │   ├── news/             — RSS news reader
 │   │   ├── news_app.{h,cpp}    — Lifecycle + main logic
 │   │   ├── news_fetcher.{h,cpp} — HTTP download wrapper
@@ -133,6 +137,7 @@ void sd_card_unlock(void);       // release SPI after SD
 - **Single I2C bus** for ALL devices: ES8311(0x18), ES7210(0x40), M5PM1(0x6e), RX8130CE(0x32), SHT40(0x44)
 - **RGB LED** single-wire G21, SK6812/WS2812 via `M5.Led`
 - **Buttons** active-low, internal pull-up: A=G10, B=G9, C=G1, PWR=G0
+- **CPU frequency** configured in `sdkconfig.defaults` (`CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_80=y`)
 - **LED indicators**: breathing(🟦blue=loading 🟨yellow=provisioning) flash(🟧orange~2s=no-network 🔴red~2s=fail 🟢green~2s=success)
 - **Strapping pins** avoid as GPIO: 0, 1, 2, 3, 8, 9, 18, 43, 46
 
@@ -176,13 +181,13 @@ Note: Album app uses `wifi_manager` (NVS + SD wifi.txt + AP provisioning).
   updated=20260706
   ```
 - Fetch: `https://bing.img.run/rand_1366x768.php` → 302 redirect → JPEG
-- Rendering: `esp_new_jpeg` decode → Floyd-Steinberg dither → battery icon → EPD
+- Rendering: `esp_new_jpeg` decode → Floyd-Steinberg dither → battery icon → LED flash → EPD refresh
 
 ### Low-Power Sleep Flow
 ```
 Boot → show cached image → 60s idle → deep sleep
-  ├─ RTC timer 30min → wake → advance to next image → deep sleep 30min
-  ├─ Button press → wake → normal mode → 60s idle → deep sleep
+  ├─ RTC timer 30min → wake → advance to next image (idx+1) → deep sleep 30min
+  ├─ Button press → wake → restore last index from RTC RAM → 60s idle → deep sleep
   └─ Battery < 10% → permanent sleep (no wake)
 
 RTC wake (daily update):
@@ -190,6 +195,12 @@ RTC wake (daily update):
   → skip sleep, main loop runs
   → run_pending_download() → dl 2..10.jpg → each persists progress
   → all 10 done → 5s delay (LED) → deep sleep 30min
+
+Index persistence:
+  - go_to_sleep() saves current_idx + last_update_date to RX8130 RTC RAM
+  - init() always calls load_rtc_ram() — cold boot yields idx=1, wake restores last index
+  - RTC wake: advance to next (|restored_idx % N| + 1)
+  - Button wake: continue from restored index (no auto-advance)
 ```
 
 ### Battery Indicator
@@ -203,7 +214,7 @@ RTC wake (daily update):
 | 🔵 Blue | Breathe | Forever | WiFi connecting (from wifi_manager) |
 | 🔵 Blue | Breathe | Forever | Loading: HTTP download / SD read / decode (from album_app) |
 | 🟢 Green | Solid | Forever | WiFi connected (from wifi_manager) |
-| 🟢 Green | Flash | ~2s | Operation succeeded (from album_app) |
+| 🟢 Green | Flash | ~2s | Image rendered (fires before EPD refresh, overlaps with refresh cycle) |
 | 🔴 Red | Flash | 3× | WiFi failed (from wifi_manager) |
 | 🔴 Red | Flash | ~2s | Request/decode failed (from album_app) |
 | 🟠 Orange | Flash | 10× | WiFi connection lost (from wifi_manager) |
@@ -235,7 +246,8 @@ RTC wake (daily update):
 
 ## Development Tips
 
-- Serial port may change on reconnect (`/dev/tty.usbmodem1101` → `2101`); check with `ls /dev/tty.*`
+- Serial port may change on reconnect (`/dev/tty.usbmodem1101` → `2101`); check with `ls /dev/tty.* /dev/cu.*`
+- If `/dev/tty.usbmodem*` is busy (Docker held it), use the matching `/dev/cu.usbmodem*` instead
 - Docker container holds serial port; run `docker rm -f papercolor-build` before flashing
 - After flash, container needs restart for next build
 - Enable verbose logging: `CORE_DEBUG_LEVEL=5` in `sdkconfig.defaults`
