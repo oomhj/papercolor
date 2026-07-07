@@ -835,8 +835,10 @@ void AlbumApp::update()
 
 void AlbumApp::handle_buttons()
 {
-    // Skip if busy handling combo (prevents wasClicked() after combo release)
-    if (_btn_busy) return;
+    // Debounce: skip if still within busy deadline
+    uint64_t now = esp_timer_get_time() / 1000;
+    if (now < _btn_busy_until) return;
+    _btn_busy_until = 0;
 
     // Track any button activity for idle sleep timer
     if (BTN_UP.isPressed() || BTN_DOWN.isPressed() || BTN_TOP.isPressed())
@@ -844,7 +846,7 @@ void AlbumApp::handle_buttons()
 
     // UP + DOWN held together → provisioning
     if (BTN_UP.isPressed() && BTN_DOWN.isPressed()) {
-        _btn_busy = true;
+        _btn_busy_until = now + 1000;  // debounce 1s
         // Try wifi.txt from SD first
         if (load_wifi_from_sd() && wifi_mgr_connect_sta(5000)) {
             set_dns();
@@ -855,8 +857,6 @@ void AlbumApp::handle_buttons()
             led_async_breath_forever(255, 200, 0);  // yellow: provisioning
             wifi_mgr_trigger_provisioning();
         }
-        vTaskDelay(pdMS_TO_TICKS(1000));  // debounce: hold busy for 1s
-        _btn_busy = false;
         return;
     }
 
