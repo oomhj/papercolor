@@ -15,6 +15,8 @@
 #include "wifi_manager.h"
 #include "wifi_provisioning.h"
 #include "filter.h"
+#include "image_downloader.h"
+#include "image_renderer.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -23,11 +25,8 @@
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <esp_sleep.h>
-#include <esp_heap_caps.h>
 #include <esp_netif.h>
 #include <esp_jpeg_dec.h>
-#include <esp_http_client.h>
-#include <esp_crt_bundle.h>
 #include <M5Unified.hpp>
 
 static const char* TAG = "Album";
@@ -143,182 +142,9 @@ static bool wifi_ensure_connected(void)
     return false;
 }
 
-// ── HTTP fetch ──────────────────────────────────────────────
 
-struct http_ctx { uint8_t* buf; size_t len; size_t cap; };
-
-static esp_err_t http_event_handler(esp_http_client_event_t* evt)
-{
-    auto* ctx = (http_ctx*)evt->user_data;
-    if (evt->event_id == HTTP_EVENT_ON_DATA && evt->data_len > 0) {
-        size_t needed = ctx->len + evt->data_len + 4096;
-        if (needed > ctx->cap) {
-            uint8_t* nb = (uint8_t*)heap_caps_realloc(ctx->buf, needed,
-                MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-            if (!nb) nb = (uint8_t*)realloc(ctx->buf, needed);
-            if (!nb) return ESP_FAIL;
-            ctx->buf = nb;
-            ctx->cap = needed;
-        }
-        memcpy(ctx->buf + ctx->len, evt->data, evt->data_len);
-        ctx->len += evt->data_len;
-    }
-    return ESP_OK;
-}
-
-static bool http_fetch_one(const char* url, uint8_t** out, size_t* out_len)
-{
-    *out = nullptr; *out_len = 0;
-
-    esp_http_client_config_t cfg = {};
-    cfg.url = url;
-    cfg.timeout_ms = 20000;
-    cfg.buffer_size = 8192;
-    cfg.crt_bundle_attach = esp_crt_bundle_attach;
-    cfg.method = HTTP_METHOD_GET;
-    cfg.max_redirection_count = 5;
-
-    http_ctx acc = {};
-    cfg.user_data = &acc;
-    cfg.event_handler = http_event_handler;
-
-    esp_http_client_handle_t c = esp_http_client_init(&cfg);
-    if (!c) return false;
-
-    esp_http_client_set_header(c, "User-Agent",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 Chrome/149.0.0.0 Safari/537.36");
-
-    esp_err_t err = esp_http_client_perform(c);
-    int status = esp_http_client_get_status_code(c);
-    esp_http_client_cleanup(c);
-
-    if (err != ESP_OK || status != 200) { free(acc.buf); return false; }
-
-    // Find JPEG start
-    size_t skip = 0;
-    for (size_t i = 0; i + 1 < acc.len; i++)
-        if (acc.buf[i] == 0xFF && acc.buf[i+1] == 0xD8) { skip = i; break; }
-    if (skip > 0) { acc.len -= skip; memmove(acc.buf, acc.buf + skip, acc.len); }
-
-    if (acc.len < 2 || acc.buf[0] != 0xFF || acc.buf[1] != 0xD8) { free(acc.buf); return false; }
-
-    *out = acc.buf;
-    *out_len = acc.len;
-    return true;
-}
 
 // ── JPEG decode + render ────────────────────────────────────
-
-static bool decode_jpeg(const uint8_t* jpeg, size_t len,
-                         uint8_t** out, int* out_sw, int* out_sh,
-                         int* out_crop_x, int* out_out_y)
-{
-    const int w = M5.Display.width();
-    const int h = M5.Display.height();
-
-    jpeg_dec_config_t dcfg = DEFAULT_JPEG_DEC_CONFIG();
-    dcfg.output_type = JPEG_PIXEL_FORMAT_RGB565_BE;
-
-    jpeg_dec_handle_t jdec = NULL;
-    jpeg_dec_header_info_t hdr = {};
-    jpeg_dec_io_t io = {};
-    io.inbuf = (uint8_t*)jpeg;
-    io.inbuf_len = (int)len;
-
-    if (jpeg_dec_open(&dcfg, &jdec) != JPEG_ERR_OK) return false;
-    bool ok_hdr = (jpeg_dec_parse_header(jdec, &io, &hdr) == JPEG_ERR_OK);
-    jpeg_dec_close(jdec);
-    if (!ok_hdr) return false;
-
-    int sh = 400;
-    int sw = (hdr.width * sh + hdr.height / 2) / hdr.height;
-    sw = ((sw + 4) / 8) * 8;
-    if (sw < w) sw = w;
-    int crop_x = (sw > w) ? (sw - w) / 2 : 0;
-    int out_y  = (h - sh) / 2;
-
-    dcfg.scale.width = sw;
-    dcfg.scale.height = sh;
-
-    if (jpeg_dec_open(&dcfg, &jdec) != JPEG_ERR_OK) return false;
-    jpeg_dec_parse_header(jdec, &io, &hdr);
-    int out_len = 0;
-    jpeg_dec_get_outbuf_len(jdec, &out_len);
-
-    bool ok = false;
-    if (out_len > 0) {
-        uint8_t* buf = (uint8_t*)jpeg_calloc_align(out_len, 16);
-        if (buf) {
-            io.outbuf = buf; io.out_size = out_len;
-            if (jpeg_dec_process(jdec, &io) == JPEG_ERR_OK) {
-                *out = buf; *out_sw = sw; *out_sh = sh;
-                *out_crop_x = crop_x; *out_out_y = out_y;
-                ok = true;
-            } else { jpeg_free_align(buf); }
-        }
-    }
-    jpeg_dec_close(jdec);
-    return ok;
-}
-
-static void draw_battery_icon(void)
-{
-    const int w = M5.Display.width();
-    int pct = bat_get_pct();
-    int segs = (pct + 9) / 20;
-    if (segs > 5) segs = 5;
-
-    // Smaller icon, top-right
-    int bx = w - 36, by = 6;
-    int bw = 30, bh = 13;
-
-    g_canvas->drawRect(bx, by, bw, bh, TFT_BLACK);
-    g_canvas->fillRect(bx + bw, by + 3, 3, bh - 6, TFT_BLACK);
-
-    int seg_w = 4, seg_gap = 1, seg_h = 9;
-    int sx = bx + 3, sy = by + 2;
-    for (int i = 0; i < 5; i++) {
-        int x = sx + i * (seg_w + seg_gap);
-        if (i < segs)
-            g_canvas->fillRect(x, sy, seg_w, seg_h, TFT_BLACK);
-        else
-            g_canvas->drawRect(x, sy, seg_w, seg_h, TFT_BLACK);
-    }
-
-    if (bat_is_charging()) {
-        g_canvas->setTextColor(TFT_BLACK);
-        g_canvas->setFont(&fonts::Font0);
-        g_canvas->drawString("+", bx + 11, by);
-    }
-}
-
-static void filter_and_display(uint8_t* decoded, int sw, int sh,
-                                int crop_x, int out_y)
-{
-    const int w = M5.Display.width();
-    const int h = M5.Display.height();
-    g_canvas->fillScreen(TFT_WHITE);
-
-    const uint16_t* src = (const uint16_t*)decoded + out_y * sw + crop_x;
-    uint8_t* dither = (uint8_t*)malloc(w * h);
-    if (!dither) return;
-
-    uint16_t* crop = (uint16_t*)malloc(w * h * 2);
-    if (!crop) { free(dither); return; }
-
-    for (int y = 0; y < h; y++)
-        memcpy(crop + y * w, src + y * sw, w * 2);
-
-    FILTERS[1].fn(crop, dither, w, h);  // Floyd-Steinberg
-    g_canvas->pushImage(0, 0, w, h, dither);
-
-    // Overlay battery icon
-    draw_battery_icon();
-
-    free(crop);
-    free(dither);
-}
 
 // ═══════════════════════════════════════════════════════════════
 //  AlbumApp implementation
@@ -392,9 +218,7 @@ int AlbumApp::scan_folder_images(void)
 
 bool AlbumApp::download_one(int index)
 {
-    char path[64];
-    snprintf(path, sizeof(path), "%s/%d.jpg", ALBUM_DIR, index);
-    ESP_LOGI(TAG, "DL %d/%d → %s", index, ALBUM_MAX_IMAGES, path);
+    ESP_LOGI(TAG, "DL %d/%d", index, ALBUM_MAX_IMAGES);
 
     if (!wifi_ensure_connected()) {
         led_no_network();
@@ -405,20 +229,18 @@ bool AlbumApp::download_one(int index)
 
     uint8_t* jpeg = nullptr;
     size_t len = 0;
-    if (!http_fetch_one("https://bing.img.run/rand_1366x768.php", &jpeg, &len)) {
+    if (!dl_fetch_default(&jpeg, &len)) {
         led_failure();
         return false;
     }
 
     sd_card_lock(2000);
-    char tmp_path[96];
-    snprintf(tmp_path, sizeof(tmp_path), "%s/%d.tmp", ALBUM_DIR, index);
-    FILE* f = fopen(tmp_path, "w");
-    if (f) { fwrite(jpeg, 1, len, f); fclose(f); }
-    rename(tmp_path, path);  // atomic on FatFS
+    bool saved = dl_save(ALBUM_DIR, index, jpeg, len);
     sd_card_unlock();
 
     free(jpeg);
+
+    if (!saved) { led_failure(); return false; }
     led_success();
     vTaskDelay(pdMS_TO_TICKS(300));
     return true;
@@ -493,26 +315,23 @@ bool AlbumApp::load_and_show(int index, bool fast)
 
 bool AlbumApp::decode_and_render(const uint8_t* jpeg, size_t len, bool fast)
 {
-    if (_decoded_buf) { free(_decoded_buf); _decoded_buf = nullptr; }
+    if (_decoded_buf) { jpeg_free_align(_decoded_buf); _decoded_buf = nullptr; }
 
     uint32_t t0 = esp_timer_get_time() / 1000;
 
-    bool ok = decode_jpeg(jpeg, len, &_decoded_buf, &_decoded_sw, &_decoded_sh,
-                           &_decoded_crop_x, &_decoded_out_y);
+    bool ok = ren_decode_jpeg(jpeg, len, &_decoded_buf, &_decoded_sw, &_decoded_sh,
+                               &_decoded_crop_x, &_decoded_out_y);
     if (!ok) return false;
 
-    uint32_t t1 = esp_timer_get_time() / 1000;
-    filter_and_display(_decoded_buf, _decoded_sw, _decoded_sh,
-                        _decoded_crop_x, _decoded_out_y);
-    uint32_t t2 = esp_timer_get_time() / 1000;
+    ren_render(_decoded_buf, _decoded_sw, _decoded_sh,
+               _decoded_crop_x, _decoded_out_y, fast);
+
+    uint32_t t3 = esp_timer_get_time() / 1000;
 
     if (_img_buf) { free(_img_buf); _img_buf = nullptr; _img_len = 0; }
 
-    pc_hal_epd_refresh(fast);
-    uint32_t t3 = esp_timer_get_time() / 1000;
-
-    ESP_LOGI(TAG, "Image: decode %dms filter %dms epd %dms%s",
-             (int)(t1 - t0), (int)(t2 - t1), (int)(t3 - t2), fast ? " fast" : "");
+    ESP_LOGI(TAG, "Image: decode+render %dms%s",
+             (int)(t3 - t0), fast ? " fast" : "");
     return true;
 }
 
@@ -575,7 +394,7 @@ bool AlbumApp::fetch_and_show_one(void)
 
     uint8_t* jpeg = nullptr;
     size_t len = 0;
-    if (!http_fetch_one("https://bing.img.run/rand_1366x768.php", &jpeg, &len)) {
+    if (!dl_fetch_default(&jpeg, &len)) {
         ESP_LOGE(TAG, "HTTP fetch failed");
         led_failure();
         return false;
