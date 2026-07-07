@@ -458,9 +458,11 @@ bool AlbumApp::download_one(int index)
     }
 
     sd_card_lock(2000);
-    unlink(path);  // remove old file if exists
-    FILE* f = fopen(path, "w");
+    char tmp_path[96];
+    snprintf(tmp_path, sizeof(tmp_path), "%s/%d.tmp", ALBUM_DIR, index);
+    FILE* f = fopen(tmp_path, "w");
     if (f) { fwrite(jpeg, 1, len, f); fclose(f); }
+    rename(tmp_path, path);  // atomic on FatFS
     sd_card_unlock();
 
     free(jpeg);
