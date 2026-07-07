@@ -323,7 +323,6 @@ static esp_err_t handle_post_config(httpd_req_t* req)
     xTaskCreate([](void*) {
         vTaskDelay(pdMS_TO_TICKS(500));  // let handler finish
         wifi_prov_stop();                // safe here (handler already returned)
-        esp_wifi_set_mode(WIFI_MODE_STA);
         wifi_mgr_connect_sta(30000);
         vTaskDelete(NULL);
     }, "prov_conn", 4096, NULL, 5, NULL);
