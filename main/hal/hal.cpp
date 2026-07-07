@@ -13,6 +13,7 @@
 #include "hal.h"
 #include "config.h"
 #include "led_driver.h"
+#include "battery.h"
 #include <cstdio>
 #include <ctime>
 #include <esp_log.h>
@@ -169,34 +170,17 @@ void pc_hal_epd_refresh(bool fast)
 
 uint16_t pc_hal_read_battery_mv(void)
 {
-    M5PM1 pmu;
-    uint16_t mv = 0;
-    pmu.begin(&M5.In_I2C, M5PM1_DEFAULT_ADDR, M5PM1_I2C_FREQ_100K);
-    if (pmu.readVbat(&mv) == M5PM1_OK) {
-        return mv;
-    }
-    return 0;
+    return bat_get_mv();
 }
 
 float pc_hal_battery_pct(void)
 {
-    uint16_t mv = pc_hal_read_battery_mv();
-    if (mv == 0) return 0.0f;
-    if (mv >= (uint16_t)(BATTERY_FULL_V * 1000)) return 100.0f;
-    if (mv <= (uint16_t)(BATTERY_EMPTY_V * 1000)) return 0.0f;
-    return (float)(mv - (uint16_t)(BATTERY_EMPTY_V * 1000)) * 100.0f /
-           (float)((BATTERY_FULL_V - BATTERY_EMPTY_V) * 1000);
+    return (float)bat_get_pct();
 }
 
 bool pc_hal_is_charging(void)
 {
-    M5PM1 pmu;
-    pmu.begin(&M5.In_I2C, M5PM1_DEFAULT_ADDR, M5PM1_I2C_FREQ_100K);
-    m5pm1_pwr_src_t src = M5PM1_PWR_SRC_UNKNOWN;
-    if (pmu.getPowerSource(&src) == M5PM1_OK) {
-        return (src == M5PM1_PWR_SRC_5VIN || src == M5PM1_PWR_SRC_5VINOUT);
-    }
-    return false;
+    return bat_is_charging();
 }
 
 void pc_hal_set_epd_power(bool on)
