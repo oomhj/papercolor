@@ -11,6 +11,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 
 // Max images in the album
 #define SS_MAX_IMAGES  10
@@ -41,7 +42,7 @@ public:
     void refresh_all_images();
     void run_pending_download();
 
-private:
+public:
     uint64_t _last_slide_ms      = 0;
     uint64_t _last_date_check_ms = 0;
 

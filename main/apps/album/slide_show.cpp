@@ -19,6 +19,7 @@
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <M5Unified.hpp>
+#include <esp_jpeg_dec.h>
 
 static const char* TAG = "Slide";
 #define ALBUM_DIR   "/sd/album"
@@ -126,7 +127,7 @@ bool SlideShow::download_one(int index)
     uint8_t* jpeg = nullptr;
     size_t len = 0;
     if (!dl_fetch_default(&jpeg, &len)) {
-        led_failure();
+        led_async_flash(255, 0, 0, 4);
         return false;
     }
 
@@ -135,8 +136,8 @@ bool SlideShow::download_one(int index)
     sd_card_unlock();
     free(jpeg);
 
-    if (!saved) { led_failure(); return false; }
-    led_success();
+    if (!saved) { led_async_flash(255, 0, 0, 4); return false; }
+    led_async_flash(0, 255, 0, 4);
     vTaskDelay(pdMS_TO_TICKS(300));
     return true;
 }
@@ -224,22 +225,22 @@ bool SlideShow::load_and_show(int index, bool fast)
 
     sd_card_lock(2000);
     FILE* f = fopen(path, "r");
-    if (!f) { sd_card_unlock(); led_failure(); return false; }
+    if (!f) { sd_card_unlock(); led_async_flash(255, 0, 0, 4); return false; }
 
     fseek(f, 0, SEEK_END);
     long flen = ftell(f);
     fseek(f, 0, SEEK_SET);
-    if (flen <= 0 || flen > 2 * 1024 * 1024) { fclose(f); sd_card_unlock(); led_failure(); return false; }
+    if (flen <= 0 || flen > 2 * 1024 * 1024) { fclose(f); sd_card_unlock(); led_async_flash(255, 0, 0, 4); return false; }
 
     uint8_t* jpeg = (uint8_t*)malloc((size_t)flen);
-    if (!jpeg) { fclose(f); sd_card_unlock(); led_failure(); return false; }
+    if (!jpeg) { fclose(f); sd_card_unlock(); led_async_flash(255, 0, 0, 4); return false; }
 
     size_t got = fread(jpeg, 1, (size_t)flen, f);
     fclose(f);
     sd_card_unlock();
 
     if (got != (size_t)flen || got < 2 || jpeg[0] != 0xFF || jpeg[1] != 0xD8) {
-        free(jpeg); led_failure(); return false;
+        free(jpeg); led_async_flash(255, 0, 0, 4); return false;
     }
 
     if (_img_buf) { free(_img_buf); _img_buf = nullptr; }
@@ -251,7 +252,7 @@ bool SlideShow::load_and_show(int index, bool fast)
     bat_update();
 
     bool ok = decode_and_render(_img_buf, _img_len, fast);
-    if (ok) { led_success(); vTaskDelay(pdMS_TO_TICKS(3000)); } else led_failure();
+    if (ok) { led_async_flash(0, 255, 0, 4); vTaskDelay(pdMS_TO_TICKS(3000)); } else led_async_flash(255, 0, 0, 4);
     return ok;
 }
 
@@ -262,12 +263,12 @@ bool SlideShow::fetch_and_show_one(void)
     uint8_t* jpeg = nullptr;
     size_t len = 0;
     if (!dl_fetch_default(&jpeg, &len)) {
-        led_failure();
+        led_async_flash(255, 0, 0, 4);
         return false;
     }
 
     bat_update();
-    led_success();
+    led_async_flash(0, 255, 0, 4);
 
     bool ok = decode_and_render(jpeg, len);
     free(jpeg);
