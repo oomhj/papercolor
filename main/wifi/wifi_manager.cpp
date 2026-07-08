@@ -166,11 +166,7 @@ static void sta_connect_slot(int slot, const char* ssid, const char* pass)
     strcpy((char*)wc.sta.ssid, ssid);
 
     if (is_enterprise) {
-        // Step 1: set mode + config
-        esp_wifi_set_mode(WIFI_MODE_STA);
-        esp_wifi_set_config(WIFI_IF_STA, &wc);
-
-        // Step 2: load and set EAP params
+        // Step 1: load and set EAP params BEFORE set_config (which triggers auto-connect)
         char identity[WIFI_MAX_IDENTITY_LEN] = {};
         char username[WIFI_MAX_IDENTITY_LEN] = {};
         char eap_pass[WIFI_MAX_PASS_LEN]     = {};
@@ -183,6 +179,10 @@ static void sta_connect_slot(int slot, const char* ssid, const char* pass)
             esp_eap_client_set_password((const uint8_t*)eap_pass, strlen(eap_pass));
         esp_eap_client_set_eap_methods(ESP_EAP_TYPE_PEAP);
         esp_eap_client_set_disable_time_check(true);
+
+        // Step 2: set mode + config (connection will carry EAP params)
+        esp_wifi_set_mode(WIFI_MODE_STA);
+        esp_wifi_set_config(WIFI_IF_STA, &wc);
 
         // Step 3: enable enterprise + start
         esp_wifi_sta_enterprise_enable();

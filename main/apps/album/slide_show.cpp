@@ -94,6 +94,28 @@ int SlideShow::scan_folder_images(void)
     return count;
 }
 
+// ── RTC calibration from HTTP server time ────────────────────
+
+void SlideShow::sync_rtc(const char* iso_date)
+{
+    // iso_date format: YYYY-MM-DDTHH:MM:SSZ (UTC)
+    int y = 0, m = 0, d = 0, hh = 0, mm = 0, ss = 0;
+    if (sscanf(iso_date, "%d-%d-%dT%d:%d:%d", &y, &m, &d, &hh, &mm, &ss) < 6) return;
+
+    // UTC → UTC+8
+    hh += 8;
+    if (hh >= 24) { hh -= 24; d++; }
+    // Basic month rollover
+    static const int dim[] = {0,31,29,31,30,31,30,31,31,30,31,30,31};
+    if (d > dim[m]) { d -= dim[m]; m++; if (m > 12) { m = 1; y++; } }
+
+    ESP_LOGI(TAG, "RTC: %04d-%02d-%02d %02d:%02d:%02d", y, m, d, hh, mm, ss);
+
+    m5::rtc_date_t rd = {}; rd.year = y; rd.month = m; rd.date = d;
+    m5::rtc_time_t rt = {}; rt.hours = hh; rt.minutes = mm; rt.seconds = ss;
+    M5.Rtc.setDateTime(&rd, &rt);
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  Lifecycle
 // ═══════════════════════════════════════════════════════════════
@@ -167,6 +189,11 @@ void SlideShow::refresh_all_images(void)
         current_idx = 1;
         load_and_show(current_idx);
         _last_slide_ms = esp_timer_get_time() / 1000;
+
+        // Calibrate RTC from HTTP Date header (server is authoritative)
+        const char* srv = dl_last_date();
+        if (srv) sync_rtc(srv);
+
         write_index_date(get_today());
         dl_pending = true;
     } else {

@@ -37,3 +37,10 @@ bool dl_fetch_default(uint8_t** out, size_t* out_len);
  * @param index      1..N, file becomes "%s/%d.jpg"
  */
 bool dl_save(const char* album_dir, int index, const uint8_t* jpeg, size_t len);
+
+/**
+ * @brief Get the server time from the last HTTP download.
+ *        Returns "YYYY-MM-DDTHH:MM:SSZ" (UTC), or NULL.
+ *        Valid until the next dl_fetch() call.
+ */
+const char* dl_last_date(void);

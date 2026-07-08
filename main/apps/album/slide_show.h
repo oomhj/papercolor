@@ -61,6 +61,7 @@ public:
     uint64_t _dl_last_fail_ms  = 0;  // last failure timestamp (ms)
 
     // Helpers
+    void sync_rtc(const char* iso_date);  // Calibrate RX8130 from HTTP Date
     int  get_today(void);
     int  read_index_date(void);
     void write_index_date(int date);

@@ -57,10 +57,7 @@ void config_write_val(const char* path, const char* key, const char* val)
     char newline[128];
     snprintf(newline, sizeof(newline), "%s=%s\n", key, val);
     strncat(tmp, newline, sizeof(tmp) - strlen(tmp) - 1);
-    // Write tmp+rename for atomicity
-    char tmp_path[256];
-    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
-    f = fopen(tmp_path, "w");
+    // Write directly (FatFS f_rename doesn't overwrite; direct write is reliable)
+    f = fopen(path, "w");
     if (f) { fputs(tmp, f); fclose(f); }
-    rename(tmp_path, path);
 }

@@ -34,31 +34,41 @@ bool PowerManager::is_idle()
 
 void PowerManager::go_to_sleep(int idx, int date, bool sd_mounted)
 {
-    // Turn off LED (SK6812 holds last color in registers during sleep)
     led_before_sleep();
 
-    // Low battery → permanent shutdown
     if (bat_is_low()) {
         ESP_LOGW(TAG, "Battery low (%u%%), shutting down permanently", bat_get_pct());
         save_rtc_ram(idx, date);
-        if (sd_mounted) { sd_card_unmount(); }
-        pc_hal_deep_sleep();  // no timer wake
+        if (sd_mounted) sd_card_unmount();
+        pc_hal_deep_sleep();
         return;
     }
 
-    ESP_LOGI(TAG, "Deep sleep (%u%%), idx=%d, wake in 30 min or button",
-             bat_get_pct(), idx);
+    // Determine wake interval
+    //   Normal: 30 min
+    //   Night (≥23:00): sleep until ~08:00 next morning
+    uint64_t wake_us = (uint64_t)PM_WAKE_INTERVAL * 1000000ULL;
+    const char* mode = "30 min";
 
-    // Save state
+    m5::rtc_date_t rd; m5::rtc_time_t rt;
+    if (M5.Rtc.getDateTime(&rd, &rt) && rt.hours >= 23) {
+        // Hours until 08:00: (8 - current_hour + 24) % 24
+        uint32_t h = (8 - rt.hours + 24) % 24;
+        wake_us = (uint64_t)h * 3600ULL * 1000000ULL;
+        mode = "night (8h)";
+        ESP_LOGI(TAG, "Night mode: %uh sleep", h);
+    }
+
+    ESP_LOGI(TAG, "Deep sleep (%u%%), idx=%d, wake in %s or button",
+             bat_get_pct(), idx, mode);
+
     save_rtc_ram(idx, date);
-    if (sd_mounted) { sd_card_unmount(); }
-
-    // Enter sleep
+    if (sd_mounted) sd_card_unmount();
     M5.Display.sleep();
     vTaskDelay(pdMS_TO_TICKS(100));
 
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-    esp_sleep_enable_timer_wakeup(PM_WAKE_INTERVAL * 1000000ULL);  // 30 min
+    esp_sleep_enable_timer_wakeup(wake_us);
     esp_sleep_enable_ext1_wakeup((1ULL << 0) | (1ULL << 1) | (1ULL << 9) | (1ULL << 10),
                                   ESP_EXT1_WAKEUP_ANY_LOW);
     esp_deep_sleep_start();

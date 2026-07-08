@@ -14,6 +14,42 @@
 
 static const char* TAG = "DL";
 
+// ── Server Date header ───────────────────────────────────────
+static char s_server_date[64] = {0};  // raw "Date" header value (RFC 2822)
+static char s_server_iso[24] = {0};   // parsed "YYYY-MM-DDTHH:MM:SSZ"
+static bool s_server_date_ok = false;
+
+/**
+ * Parse RFC 2822 date string ("Wed, 08 Jul 2026 03:30:00 GMT")
+ * into ISO format YYYY-MM-DDTHH:MM:SSZ (UTC).
+ */
+static void parse_server_date(const char* raw)
+{
+    if (!raw || !raw[0]) return;
+    // Skip optional weekday prefix, e.g. "Wed, "
+    const char* p = raw;
+    while (*p && *p != ' ') p++;
+    while (*p == ' ') p++;
+
+    // Expect: DD Mon YYYY HH:MM:SS ...
+    int day = 0, year = 0, hh = 0, mm = 0, ss = 0;
+    char mon_str[8] = {0};
+    if (sscanf(p, "%d %3s %d %d:%d:%d", &day, mon_str, &year, &hh, &mm, &ss) < 5) return;
+
+    static const char* months[12] = {"Jan","Feb","Mar","Apr","May","Jun",
+                                      "Jul","Aug","Sep","Oct","Nov","Dec"};
+    int mon = -1;
+    for (int i = 0; i < 12; i++) {
+        if (strcasecmp(mon_str, months[i]) == 0) { mon = i + 1; break; }
+    }
+    if (mon < 1) return;
+
+    snprintf(s_server_iso, sizeof(s_server_iso),
+             "%04d-%02d-%02dT%02d:%02d:%02dZ", year, mon, day, hh, mm, ss);
+    s_server_date_ok = true;
+    ESP_LOGI(TAG, "Server time: %s", s_server_iso);
+}
+
 // ── Internal HTTP context ────────────────────────────────────
 
 struct http_ctx { uint8_t* buf; size_t len; size_t cap; };
@@ -21,6 +57,15 @@ struct http_ctx { uint8_t* buf; size_t len; size_t cap; };
 static esp_err_t http_event_handler(esp_http_client_event_t* evt)
 {
     auto* ctx = (http_ctx*)evt->user_data;
+    if (evt->event_id == HTTP_EVENT_ON_HEADER) {
+        if (strcasecmp((const char*)evt->header_key, "date") == 0) {
+            size_t n = strlen((const char*)evt->header_value);
+            if (n >= sizeof(s_server_date)) n = sizeof(s_server_date) - 1;
+            memcpy(s_server_date, evt->header_value, n);
+            s_server_date[n] = '\0';
+            s_server_date_ok = false;
+        }
+    }
     if (evt->event_id == HTTP_EVENT_ON_DATA && evt->data_len > 0) {
         size_t needed = ctx->len + evt->data_len + 4096;
         if (needed > ctx->cap) {
@@ -33,6 +78,9 @@ static esp_err_t http_event_handler(esp_http_client_event_t* evt)
         }
         memcpy(ctx->buf + ctx->len, evt->data, evt->data_len);
         ctx->len += evt->data_len;
+    }
+    if (evt->event_id == HTTP_EVENT_ON_FINISH && s_server_date[0]) {
+        parse_server_date(s_server_date);
     }
     return ESP_OK;
 }
@@ -116,4 +164,9 @@ bool dl_save(const char* album_dir, int index, const uint8_t* jpeg, size_t len)
         return false;
     }
     return true;
+}
+
+const char* dl_last_date(void)
+{
+    return s_server_date_ok ? s_server_iso : NULL;
 }
