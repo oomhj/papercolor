@@ -190,12 +190,6 @@ bool AlbumApp::init()
         }
 
         if (today > 0 && today > _slideshow.last_update_date) {
-            // Try to connect WiFi before refresh — without this the download
-            // always fails because WiFi was never initiated after RTC wake.
-            if (wifi_mgr_get_state() != WIFI_STATE_STA_OK) {
-                load_wifi_from_sd();
-                wifi_ensure_connected();
-            }
             _slideshow.refresh_all_images();
         } else if (today > 0 && today == _slideshow.last_update_date &&
                    _slideshow.total_images < SS_MAX_IMAGES) {

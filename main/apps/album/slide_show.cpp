@@ -156,6 +156,12 @@ void SlideShow::refresh_all_images(void)
     _dl_fail_count = 0;  // reset backoff on manual refresh
     total_images = 0;
 
+    // Ensure WiFi is connected — required for HTTP download.
+    // Config is pre-loaded to NVS in AlbumApp::init() from SD card.
+    if (wifi_mgr_get_state() != WIFI_STATE_STA_OK) {
+        wifi_mgr_connect_sta(5000);
+    }
+
     if (download_one(1)) {
         total_images = 1;
         current_idx = 1;
@@ -373,11 +379,6 @@ void SlideShow::check_daily_update(int today)
     if (today > last_update_date) {
         ESP_LOGI(TAG, "New day (%d > %d), refreshing", today, last_update_date);
         last_update_date = today;
-        // Try to connect WiFi before refresh — this may be called from
-        // the update loop where WiFi hasn't been connected yet.
-        if (wifi_mgr_get_state() != WIFI_STATE_STA_OK) {
-            wifi_mgr_connect_sta(5000);
-        }
         refresh_all_images();
     }
 }
