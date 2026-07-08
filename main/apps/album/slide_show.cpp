@@ -167,6 +167,10 @@ void SlideShow::refresh_all_images(void)
         total_images = scan_folder_images();
         if (total_images > 0)
             ESP_LOGI(TAG, "Refresh failed, restored %d cached images", total_images);
+        // Don't write today's date — the next RTC wake will retry.
+        // dl_pending = true blocks immediate sleep so the update loop
+        // can attempt retry before the 60s idle timeout.
+        dl_pending = true;
     }
 }
 

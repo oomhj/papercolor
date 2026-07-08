@@ -219,7 +219,17 @@ void led_async_stop(void)
 
 void led_before_sleep(void)
 {
-    // Synchronous: bypasses the LED task, sends zero-brightness frame directly
+    // Drain any pending LED commands the async task might still be processing.
+    // If esp_deep_sleep_start() halts the CPU while the LED task is in the
+    // middle of sending RMT data via led_flash(), the SK6812 can be left in
+    // an undefined (non-off) state.
+    if (s_led_queue) {
+        xQueueReset(s_led_queue);              // discard queued flash/breath
+        led_async_off();                        // queue final OFF
+        vTaskDelay(pdMS_TO_TICKS(100));         // let LED task process OFF + RMT TX
+    }
+    // Synchronous fallback: bypasses the LED task, sends zero-brightness
+    // frame directly — RMT completes before the CPU halts.
     led_off();
-    vTaskDelay(pdMS_TO_TICKS(10));   // ensure RMT transmission completes
+    vTaskDelay(pdMS_TO_TICKS(10));
 }

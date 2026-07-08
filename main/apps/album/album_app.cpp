@@ -182,10 +182,19 @@ bool AlbumApp::init()
             _slideshow.current_idx = (_slideshow.current_idx % _slideshow.total_images) + 1;
             _slideshow.load_and_show(_slideshow.current_idx);
         }
+
         if (today > 0 && today > _slideshow.last_update_date) {
+            // Try to connect WiFi before refresh — without this the download
+            // always fails because WiFi was never initiated after RTC wake.
+            if (wifi_mgr_get_state() != WIFI_STATE_STA_OK) {
+                load_wifi_from_sd();
+                wifi_ensure_connected();
+            }
             _slideshow.refresh_all_images();
         } else if (today > 0 && today == _slideshow.last_update_date &&
                    _slideshow.total_images < SS_MAX_IMAGES) {
+            ESP_LOGI(TAG, "Resume interrupted download (%d/%d)",
+                     _slideshow.total_images, SS_MAX_IMAGES);
             _slideshow.dl_pending = true;
         }
         if (!_slideshow.dl_pending)
