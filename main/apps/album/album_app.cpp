@@ -126,6 +126,12 @@ bool AlbumApp::init()
 
     _sd_mounted = sd_card_mount();
 
+    // Pre-load WiFi config from SD to NVS so subsequent
+    // wifi_mgr_connect_sta() calls have credentials available.
+    if (_sd_mounted) {
+        load_wifi_from_sd();
+    }
+
     int today = 0;
     {
         m5::rtc_date_t d;

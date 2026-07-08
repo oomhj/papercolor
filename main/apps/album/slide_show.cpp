@@ -373,6 +373,11 @@ void SlideShow::check_daily_update(int today)
     if (today > last_update_date) {
         ESP_LOGI(TAG, "New day (%d > %d), refreshing", today, last_update_date);
         last_update_date = today;
+        // Try to connect WiFi before refresh — this may be called from
+        // the update loop where WiFi hasn't been connected yet.
+        if (wifi_mgr_get_state() != WIFI_STATE_STA_OK) {
+            wifi_mgr_connect_sta(5000);
+        }
         refresh_all_images();
     }
 }
