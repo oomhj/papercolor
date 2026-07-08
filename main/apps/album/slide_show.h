@@ -56,6 +56,10 @@ public:
     int _decoded_crop_x   = 0;
     int _decoded_out_y    = 0;
 
+    // ── Download retry backoff ──────────────────────────────
+    int     _dl_fail_count    = 0;   // consecutive failures
+    uint64_t _dl_last_fail_ms  = 0;  // last failure timestamp (ms)
+
     // Helpers
     int  get_today(void);
     int  read_index_date(void);

@@ -112,6 +112,8 @@ void SlideShow::init(int today)
     _last_date_check_ms = 0;
     dl_pending = false;
     dl_in_progress = false;
+    _dl_fail_count = 0;
+    _dl_last_fail_ms = 0;
     _img_buf = nullptr;
     _decoded_buf = nullptr;
 
@@ -151,6 +153,7 @@ bool SlideShow::download_one(int index)
 void SlideShow::refresh_all_images(void)
 {
     ESP_LOGI(TAG, "Refresh: dl 1 → show → queue rest");
+    _dl_fail_count = 0;  // reset backoff on manual refresh
     total_images = 0;
 
     if (download_one(1)) {
@@ -173,19 +176,49 @@ void SlideShow::run_pending_download(void)
     dl_in_progress = true;
 
     if (total_images < SS_MAX_IMAGES) {
+        // ── Check backoff ──────────────────────────────────
+        if (_dl_fail_count > 0) {
+            uint64_t backoff_ms = 5ULL * 60 * 1000;  // 5 min base
+            // Exponential backoff: 5min, 10min, 20min, 40min, 60min (cap)
+            uint64_t capped = backoff_ms * (1ULL << (_dl_fail_count - 1));
+            if (capped > 60ULL * 60 * 1000) capped = 60ULL * 60 * 1000;
+            uint64_t now_ms = esp_timer_get_time() / 1000;
+            if (now_ms < _dl_last_fail_ms + capped) {
+                ESP_LOGW(TAG, "Backoff: %lu/%lu s until retry", 
+                    (now_ms - _dl_last_fail_ms) / 1000,
+                    capped / 1000);
+                dl_in_progress = false;
+                return;
+            }
+        }
+
         ESP_LOGI(TAG, "Downloading %d..%d ...", total_images + 1, SS_MAX_IMAGES);
         led_async_breath_forever(0, 0, 255);
 
         int start = total_images + 1;
+        bool any_failed = false;
         for (int i = start; i <= SS_MAX_IMAGES; i++) {
             if (download_one(i)) {
                 total_images = i;
                 write_index_date(get_today());
-            } else break;
+                _dl_fail_count = 0;  // reset on success
+            } else {
+                any_failed = true;
+                break;
+            }
+        }
+
+        if (any_failed) {
+            _dl_fail_count++;
+            _dl_last_fail_ms = esp_timer_get_time() / 1000;
+            ESP_LOGW(TAG, "DL fail #%d, backoff %lu min", 
+                _dl_fail_count,
+                (5ULL * (1ULL << (_dl_fail_count - 1))) / 60);
         }
     }
 
     if (total_images >= SS_MAX_IMAGES) {
+        _dl_fail_count = 0;
         int today = get_today();
         if (today > 0) write_index_date(today);
         dl_pending = false;
@@ -194,6 +227,15 @@ void SlideShow::run_pending_download(void)
         vTaskDelay(pdMS_TO_TICKS(5000));
         dl_pending = false;  // signal caller to sleep
         return;
+    }
+
+    // ── Max backoff reached — give up and sleep ─────────────
+    // Fail count 5 means backoff already hit 60min cap
+    if (_dl_fail_count >= 5 && total_images > 0) {
+        ESP_LOGW(TAG, "Gave up after %d failures, sleeping with %d cached images",
+                 _dl_fail_count, total_images);
+        _dl_fail_count = 0;
+        dl_pending = false;
     }
     dl_in_progress = false;
 }
