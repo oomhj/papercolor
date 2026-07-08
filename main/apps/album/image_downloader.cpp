@@ -105,6 +105,15 @@ bool dl_save(const char* album_dir, int index, const uint8_t* jpeg, size_t len)
     fclose(f);
 
     if (written != len) { remove(tmp); return false; }
-    rename(tmp, path);  // atomic on FatFS
+
+    // FatFS rename() does NOT overwrite an existing target file.
+    // Remove the old .jpg first, then rename .tmp → .jpg.
+    // If power is lost between remove and rename, the .tmp survives
+    // and scan_folder_images() will detect a missing file on next boot.
+    remove(path);
+    if (rename(tmp, path) != 0) {
+        remove(tmp);
+        return false;
+    }
     return true;
 }
