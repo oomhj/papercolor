@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <esp_jpeg_dec.h>
@@ -105,18 +106,18 @@ static void draw_battery_icon(void)
 
 // ── Dither + display + EPD refresh ───────────────────────────
 
-void ren_render(uint8_t* decoded, int sw, int sh,
+bool ren_render(uint8_t* decoded, int sw, int sh,
                 int crop_x, int out_y, bool fast)
 {
     const int w = M5.Display.width();
     const int h = M5.Display.height();
     const uint16_t* src = (const uint16_t*)decoded + out_y * sw + crop_x;
 
-    // Allocate working buffers
-    uint8_t* dither = (uint8_t*)malloc(w * h);
-    if (!dither) return;
-    uint16_t* crop = (uint16_t*)malloc(w * h * 2);
-    if (!crop) { free(dither); return; }
+    // Allocate working buffers in PSRAM (400*600*2 = 480KB exceeds internal RAM)
+    uint8_t* dither = (uint8_t*)heap_caps_malloc(w * h, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!dither) return false;
+    uint16_t* crop = (uint16_t*)heap_caps_malloc(w * h * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!crop) { heap_caps_free(dither); return false; }
 
     // Crop center region
     for (int y = 0; y < h; y++)
@@ -130,8 +131,8 @@ void ren_render(uint8_t* decoded, int sw, int sh,
     draw_battery_icon();
     uint32_t t1 = esp_timer_get_time() / 1000;
 
-    free(crop);
-    free(dither);
+    heap_caps_free(crop);
+    heap_caps_free(dither);
 
     // LED flash before EPD refresh — user sees EPD updating visually
     led_async_flash(0, 255, 0, 4);
@@ -142,4 +143,5 @@ void ren_render(uint8_t* decoded, int sw, int sh,
 
     ESP_LOGI(TAG, "filter %dms epd %dms%s",
              (int)(t1 - t0), (int)(t2 - t1), fast ? " fast" : "");
+    return true;
 }

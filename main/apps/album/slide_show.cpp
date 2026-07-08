@@ -252,11 +252,11 @@ bool SlideShow::decode_and_render(const uint8_t* jpeg, size_t len, bool fast)
                                &_decoded_crop_x, &_decoded_out_y);
     if (!ok) return false;
 
-    ren_render(_decoded_buf, _decoded_sw, _decoded_sh,
-               _decoded_crop_x, _decoded_out_y, fast);
+    ok = ren_render(_decoded_buf, _decoded_sw, _decoded_sh,
+                    _decoded_crop_x, _decoded_out_y, fast);
 
     if (_img_buf) { free(_img_buf); _img_buf = nullptr; _img_len = 0; }
-    return true;
+    return ok;
 }
 
 // ═══════════════════════════════════════════════════════════════

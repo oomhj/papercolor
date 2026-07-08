@@ -27,6 +27,7 @@ bool ren_decode_jpeg(const uint8_t* jpeg, size_t len,
  * @param crop_x    X offset into scaled image (center crop)
  * @param out_y     Y offset on target display
  * @param fast      true = epd_fastest, false = epd_quality
+ * @return true on success (EPD refreshed), false if allocation failed
  */
-void ren_render(uint8_t* decoded, int sw, int sh,
+bool ren_render(uint8_t* decoded, int sw, int sh,
                 int crop_x, int out_y, bool fast);
